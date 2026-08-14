@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy.dialects.sqlite import insert
-
 from src.config import load_settings
 from src.data.db import economic_events
 from src.data.db import get_engine
+from src.data.db import upsert_insert as insert
 from src.macro.fred import FredClient
 
 CURRENCIES = ["USD", "EUR", "GBP", "JPY", "CAD", "AUD"]

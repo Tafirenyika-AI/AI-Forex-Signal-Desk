@@ -28,7 +28,6 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
-from sqlalchemy.dialects.sqlite import insert
 
 from src.broker.oanda import OandaBroker
 from src.challengers.definitions import CHALLENGERS, active_challengers
@@ -38,6 +37,7 @@ from src.data.db import get_engine
 from src.data.db import signal_evaluations as signal_evaluations_table
 from src.data.db import strategy_graveyard as strategy_graveyard_table
 from src.data.db import trade_intents as trade_intents_table
+from src.data.db import upsert_insert as insert
 from src.run_loop import HORIZON_CONFIGS, horizon_duration
 
 # Evaluated MIN_SAMPLES same as train_meta_model.py's own gate — enough that

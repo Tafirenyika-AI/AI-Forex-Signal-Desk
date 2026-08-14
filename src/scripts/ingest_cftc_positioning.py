@@ -12,11 +12,10 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
-from sqlalchemy.dialects.sqlite import insert
-
 from src.config import load_settings
 from src.data.db import cftc_positioning as cftc_positioning_table
 from src.data.db import get_engine
+from src.data.db import upsert_insert as insert
 from src.positioning.cftc import CONTRACT_NAMES, fetch_positioning_history
 
 

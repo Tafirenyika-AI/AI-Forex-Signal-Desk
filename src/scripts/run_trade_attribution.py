@@ -18,13 +18,13 @@ import json
 from datetime import datetime, timezone
 
 from sqlalchemy import select
-from sqlalchemy.dialects.sqlite import insert
 
 from src.broker.oanda import OandaBroker
 from src.config import load_settings
 from src.data.db import get_engine
 from src.data.db import trade_attribution as trade_attribution_table
 from src.data.db import trade_outcomes as trade_outcomes_table
+from src.data.db import upsert_insert as insert
 from src.memory.attribution import attribute_trade
 
 

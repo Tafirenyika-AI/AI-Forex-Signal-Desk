@@ -30,12 +30,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import select
-from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Engine
 
 from src.broker.oanda import OandaBroker, parse_oanda_time
 from src.data.db import authorizations as authorizations_table
 from src.data.db import trade_outcomes as trade_outcomes_table
+from src.data.db import upsert_insert as insert
 
 
 def _outcome_label(realized_pl: float) -> str:

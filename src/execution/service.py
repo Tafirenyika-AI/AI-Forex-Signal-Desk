@@ -15,11 +15,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Engine
 
 from src.broker.base import OrderResult
 from src.data.db import orders_fills as orders_fills_table
+from src.data.db import upsert_insert as insert
 
 logger = logging.getLogger(__name__)
 

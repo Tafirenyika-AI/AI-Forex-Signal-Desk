@@ -28,11 +28,10 @@ from datetime import datetime, timezone
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
-from sqlalchemy.dialects.sqlite import insert
-
 from src.config import load_settings
 from src.data.db import get_engine
 from src.data.db import news_events as news_events_table
+from src.data.db import upsert_insert as insert
 from src.news.gdelt import GDELTClient, title_sentiment
 
 MAX_DISTINCT_DOMAIN_BONUS = 0.25

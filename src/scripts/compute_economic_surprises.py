@@ -10,11 +10,11 @@ import asyncio
 from datetime import datetime, timezone
 
 from sqlalchemy import select
-from sqlalchemy.dialects.sqlite import insert
 
 from src.broker.oanda import OandaBroker
 from src.config import load_settings
 from src.data.db import economic_events, economic_surprises, get_engine
+from src.data.db import upsert_insert as insert
 from src.models.market_reaction import compute_price_reaction
 from src.models.surprise_engine import detect_reaction_mismatch, match_surprises
 

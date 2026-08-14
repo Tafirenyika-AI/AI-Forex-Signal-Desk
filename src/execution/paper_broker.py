@@ -19,13 +19,13 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from sqlalchemy import select
-from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Engine
 
 from src.broker.base import AccountState, OrderResult
 from src.broker.oanda import OandaBroker
 from src.config import Settings
 from src.data.db import paper_account_state, paper_order_ids_seen, paper_positions
+from src.data.db import upsert_insert as insert
 from src.risk.governor import usd_value_per_unit
 
 

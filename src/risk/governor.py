@@ -15,11 +15,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Engine
 
 from src.data.db import risk_state as risk_state_table
 from src.data.db import risk_state_weekly as risk_state_weekly_table
+from src.data.db import upsert_insert as insert
 
 # --- sec. 8 controls (defaults) ---
 RISK_PER_TRADE_PCT = 0.0025  # 0.25% of equity, per sec. 8 default

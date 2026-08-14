@@ -18,7 +18,6 @@ import sys
 from datetime import datetime, timezone
 
 from sqlalchemy import select
-from sqlalchemy.dialects.sqlite import insert
 
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -32,6 +31,7 @@ from src.central_bank.diff_engine import (
 from src.central_bank.fed_source import fetch_recent_statements
 from src.config import load_settings
 from src.data.db import central_bank_statements, get_engine
+from src.data.db import upsert_insert as insert
 
 
 def _statement_type(title: str) -> str:

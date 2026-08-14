@@ -18,6 +18,29 @@ from sqlalchemy import (
 
 metadata = MetaData()
 
+
+def upsert_insert(table):
+    """Dialect-aware insert() construct supporting .on_conflict_do_nothing()/
+    .on_conflict_do_update() — SQLite's and Postgres's dialect-specific
+    insert() share an identical index_elements=/set_=/.excluded API by
+    SQLAlchemy's own design, so every existing call site written against
+    SQLite's insert() works completely unchanged; only the *constructor*
+    needs to differ per backend, which this centralizes (same DATABASE_URL
+    check get_engine() itself uses, so the two switch together
+    automatically). Real production bug found live 2026-08-14: every
+    scheduled job's upsert crashed with `AttributeError: 'OnConflictDoNothing'
+    object has no attribute 'constraint_target'` against Postgres —
+    SQLAlchemy's Postgres compiler can't compile a SQLite-dialect conflict
+    clause object. Every affected file now does
+    `from src.data.db import upsert_insert as insert` in place of
+    `from sqlalchemy.dialects.sqlite import insert` — a one-line change,
+    since the rest of each call site's code is identical either way."""
+    if os.environ.get("DATABASE_URL", "").strip():
+        from sqlalchemy.dialects.postgresql import insert as _insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert as _insert
+    return _insert(table)
+
 # --- users / invitations / sessions / user_oanda_accounts / user_preferences:
 # invite-only multi-user auth. Password hashing (bcrypt) and OANDA-token
 # encryption (Fernet) live in src/auth/crypto.py, never in this file — this

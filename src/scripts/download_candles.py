@@ -7,12 +7,11 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy.dialects.sqlite import insert
-
 from src.broker.oanda import OandaBroker
 from src.config import load_settings
 from src.data.db import candles as candles_table
 from src.data.db import get_engine
+from src.data.db import upsert_insert as insert
 
 PAIRS = ["EUR_USD", "GBP_USD", "USD_JPY", "USD_CAD", "AUD_USD"]
 GRANULARITIES = ["M15", "H1", "H4"]

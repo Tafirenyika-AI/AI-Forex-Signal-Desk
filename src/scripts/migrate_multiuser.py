@@ -36,12 +36,12 @@ import shutil
 from datetime import datetime, timezone
 
 from sqlalchemy import inspect, select, text
-from sqlalchemy.dialects.sqlite import insert
 
 from src.auth.crypto import encrypt_secret, hash_password
 from src.config import load_settings
 from src.data import db
 from src.data.db import get_engine
+from src.data.db import upsert_insert as insert
 
 ADMIN_EMAIL = "shoniwatafirenyika@gmail.com"
 ADMIN_USERNAME = "shoniwatafirenyika@gmail.com"  # same value serves as either login field

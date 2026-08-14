@@ -17,10 +17,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import delete, select
-from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Engine
 
 from src.data.db import knowledge_chunks, knowledge_documents
+from src.data.db import upsert_insert as insert
 from src.knowledge.chunking import chunk_text
 from src.knowledge.extract import extract_text, guess_title
 from src.knowledge.hypotheses import classify_topic, extract_candidate_hypotheses

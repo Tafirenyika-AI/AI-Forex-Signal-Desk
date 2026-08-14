@@ -23,11 +23,11 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score
 from sqlalchemy import select
-from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Engine
 
 from src.data.db import model_registry as model_registry_table
 from src.data.db import predictions as predictions_table
+from src.data.db import upsert_insert as insert
 from src.data.db import trade_outcomes as trade_outcomes_table
 
 MIN_SAMPLES = 30

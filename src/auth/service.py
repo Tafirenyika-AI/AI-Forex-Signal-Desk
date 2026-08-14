@@ -13,13 +13,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
-from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Engine
 
 from src.auth.crypto import decrypt_secret, encrypt_secret, hash_password, verify_password
 from src.config import Settings, settings_for_user
 from src.data.db import invitations as invitations_table
 from src.data.db import sessions as sessions_table
+from src.data.db import upsert_insert as insert
 from src.data.db import user_oanda_accounts as user_oanda_accounts_table
 from src.data.db import user_preferences as user_preferences_table
 from src.data.db import users as users_table

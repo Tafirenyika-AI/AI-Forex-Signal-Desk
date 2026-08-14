@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy.dialects.sqlite import insert
-
 from src.config import load_settings
 from src.data.db import get_engine
 from src.data.db import news_events as news_events_table
+from src.data.db import upsert_insert as insert
 from src.news.alpha_vantage import AlphaVantageNewsClient
 
 
