@@ -1,0 +1,103 @@
+"""Links closed broker trades back to the trade_intent that caused them.
+
+This is what makes "train the model on results" possible at all: without
+it, orders_fills tells you a trade happened and predictions tells you what
+the model thought, but nothing connects either of those to what actually
+happened to the money. The link runs:
+
+    OANDA ORDER_FILL transaction with tradesClosed[]
+        -> tradesClosed[].tradeID == the id of the ORIGINAL opening
+           ORDER_FILL transaction (verified live 2026-08-13 by tracing a
+           real stop-loss close back to its entry)
+        -> that opening transaction's clientOrderID
+        -> authorizations.resulting_client_order_id
+        -> authorizations.trade_intent_id
+        -> trade_intents / predictions
+
+Earlier versions of this tracker used OANDA's `/trades?state=CLOSED` and
+`/trades/{id}` endpoints — verified live to both return nothing for trades
+that have already closed on this practice environment (`/trades/{id}`
+404s outright). The transaction ledger (`/transactions/idrange`) is the
+only source that reliably retains closed-trade history, so that's what
+this walks instead.
+
+Only demo (real OANDA account) trades are covered — PaperBroker doesn't
+maintain a transaction ledger in v1 (see its docstring), so paper outcomes
+aren't tracked here yet.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.engine import Engine
+
+from src.broker.oanda import OandaBroker, parse_oanda_time
+from src.data.db import authorizations as authorizations_table
+from src.data.db import trade_outcomes as trade_outcomes_table
+
+
+def _outcome_label(realized_pl: float) -> str:
+    if realized_pl > 0:
+        return "WIN"
+    if realized_pl < 0:
+        return "LOSS"
+    return "BREAKEVEN"
+
+
+async def sync_outcomes(engine: Engine, broker: OandaBroker, user_id: int, execution_mode: str = "demo") -> int:
+    """Walks the full transaction ledger, finds every ORDER_FILL that closed
+    one or more trades, matches each back to its trade_intent (if
+    resolvable), and upserts into trade_outcomes. Returns the number of
+    newly-inserted rows (not updates)."""
+    all_txns = await broker.transactions()
+    txns_by_id = {t["id"]: t for t in all_txns if t.get("type") == "ORDER_FILL"}
+    now = datetime.now(timezone.utc)
+    new_count = 0
+
+    with engine.begin() as conn:
+        for txn in all_txns:
+            if txn.get("type") != "ORDER_FILL" or not txn.get("tradesClosed"):
+                continue
+
+            for closed in txn["tradesClosed"]:
+                trade_id = closed["tradeID"]
+                opening_txn = txns_by_id.get(trade_id)
+
+                client_order_id = opening_txn.get("clientOrderID") if opening_txn else None
+                trade_intent_id = None
+                if client_order_id:
+                    auth = conn.execute(
+                        select(authorizations_table.c.trade_intent_id)
+                        .where(authorizations_table.c.resulting_client_order_id == client_order_id)
+                    ).first()
+                    if auth:
+                        trade_intent_id = auth[0]
+
+                opening_units = int(opening_txn["units"]) if opening_txn else -int(closed["units"])
+                realized_pl = float(closed["realizedPL"])
+
+                stmt = insert(trade_outcomes_table).values(
+                    user_id=user_id,
+                    trade_intent_id=trade_intent_id,
+                    client_order_id=client_order_id,
+                    broker_trade_id=trade_id,
+                    execution_mode=execution_mode,
+                    instrument=txn["instrument"],
+                    action="BUY" if opening_units > 0 else "SELL",
+                    units=abs(opening_units),
+                    entry_price=float(opening_txn["price"]) if opening_txn else float(closed["price"]),
+                    exit_price=float(txn["price"]),
+                    realized_pl_usd=realized_pl,
+                    opened_at=parse_oanda_time(opening_txn["time"]) if opening_txn else None,
+                    closed_at=parse_oanda_time(txn["time"]),
+                    outcome=_outcome_label(realized_pl),
+                    synced_at=now,
+                )
+                stmt = stmt.on_conflict_do_nothing(index_elements=["broker_trade_id", "execution_mode"])
+                result = conn.execute(stmt)
+                if result.rowcount:
+                    new_count += 1
+
+    return new_count

@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/*.sqlite
+data/*.pre_multiuser_backup
+data/model_cache/
+data/models/
+logs/*.log
+.pytest_cache/
+.DS_Store
+Thumbs.db
