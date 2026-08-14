@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from sqlalchemy import (
     Boolean,
     Column,
@@ -642,7 +644,39 @@ promotion_gate_snapshots = Table(
 
 
 def get_engine(db_path):
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(f"sqlite:///{db_path}", future=True)
+    """Every DB access in this project goes through this one function (21
+    call sites, all passing settings.db_path) — so a shared remote database
+    for local+cloud parity (2026-08-14) is a single conditional here rather
+    than touching any caller. DATABASE_URL unset (the default) means zero
+    behavior change from before this existed: same local sqlite file, same
+    path. Set means every process — local scheduled tasks and any
+    cloud-hosted dashboard — reads/writes the identical live remote
+    database instead.
+
+    Originally built against Turso/libSQL (SQLite-compatible, smallest
+    conceptual change), but sqlalchemy-libsql hard-depends on
+    libsql-experimental, a Rust-compiled extension with no Windows wheels
+    (confirmed 2026-08-14: Linux/macOS only) — building it needs a full
+    Rust + MSVC toolchain not present on this machine. Switched to Postgres
+    instead: psycopg[binary] ships a prebuilt win_amd64 wheel, zero
+    compilation, and is SQLAlchemy's most mature, first-class dialect. Safe
+    for this codebase specifically because every query goes through
+    SQLAlchemy Core (select/insert/update/Table) rather than raw
+    SQLite-flavored SQL strings — confirmed no `datetime('now', ...)` or
+    other SQLite-specific syntax exists in the live runtime path (only in
+    the one-off, already-run src/scripts/migrate_multiuser.py)."""
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if database_url:
+        dsn = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+        # pool_pre_ping: cheap validation query before reusing a pooled
+        # connection — remote connections get dropped server-side after
+        # idle periods (this app's scheduled task only connects once every
+        # couple of minutes), and without this a stale connection surfaces
+        # as a raw "server closed the connection unexpectedly" error
+        # instead of transparently reconnecting.
+        engine = create_engine(dsn, future=True, pool_pre_ping=True)
+    else:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        engine = create_engine(f"sqlite:///{db_path}", future=True)
     metadata.create_all(engine)
     return engine
