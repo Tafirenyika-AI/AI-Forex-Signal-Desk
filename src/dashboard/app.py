@@ -11,10 +11,24 @@ Run from the project root with the venv active:
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Running `streamlit run src/dashboard/app.py` locally via `python -m
+# streamlit ...` from the project root happens to work without this,
+# because the `-m` flag itself adds the current working directory to
+# sys.path — but Streamlit Community Cloud's own launcher doesn't invoke
+# it that way, so `src` isn't importable as a top-level package there
+# (confirmed live 2026-08-14: "ModuleNotFoundError: No module named
+# 'src'" on Cloud only, never locally). Inserting the real project root
+# (three levels up from this file: app.py -> dashboard -> src -> root)
+# makes every `from src.xxx import ...` below resolve identically
+# regardless of how or where this script is launched from.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
 import asyncio
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -1196,7 +1210,10 @@ with tab_council:
                     }
                     for v in votes
                 ]
-                st.plotly_chart(component_votes_figure(vote_rows), width="stretch", config={"displayModeBar": False})
+                st.plotly_chart(
+                    component_votes_figure(vote_rows), width="stretch", config={"displayModeBar": False},
+                    key=f"votes_{intent['id']}",
+                )
                 with st.expander("Raw vote data"):
                     st.dataframe(pd.DataFrame(vote_rows), width="stretch", hide_index=True)
             else:
@@ -1289,6 +1306,7 @@ with tab_signals:
                                 target=ticket.get("take_profit"),
                             ),
                             width="stretch", config={"displayModeBar": False},
+                            key=f"candles_{intent['id']}",
                         )
                         with st.expander("Table view (raw candles)"):
                             st.dataframe(pd.DataFrame(candles), width="stretch", hide_index=True)
@@ -1666,7 +1684,10 @@ with tab_challengers:
                 picked = st.selectbox("Segment", segment_names, key="calibration_segment_pick")
                 picked_report = next(r for r in other_segments if r.segment == picked)
                 st.caption(f"n={picked_report.n} · Brier={picked_report.brier_score:.3f}")
-                st.plotly_chart(reliability_figure(picked_report), width="stretch", config={"displayModeBar": False})
+                st.plotly_chart(
+                    reliability_figure(picked_report), width="stretch", config={"displayModeBar": False},
+                    key=f"reliability_{picked_report.segment}",
+                )
 
 # ----------------------------------------------------------------- knowledge --
 with tab_knowledge:
@@ -1870,7 +1891,7 @@ with tab_risk:
             if daily_pl_pct is not None:
                 st.plotly_chart(
                     loss_meter_figure(daily_pl_pct, risk_governor.DAILY_LOSS_LIMIT_PCT, "Daily"),
-                    width="stretch", config={"displayModeBar": False},
+                    width="stretch", config={"displayModeBar": False}, key="loss_meter_daily",
                 )
             else:
                 st.caption("No daily baseline recorded yet.")
@@ -1878,7 +1899,7 @@ with tab_risk:
             if weekly_pl_pct is not None:
                 st.plotly_chart(
                     loss_meter_figure(weekly_pl_pct, risk_governor.WEEKLY_LOSS_LIMIT_PCT, "Weekly"),
-                    width="stretch", config={"displayModeBar": False},
+                    width="stretch", config={"displayModeBar": False}, key="loss_meter_weekly",
                 )
             else:
                 st.caption("No weekly baseline recorded yet.")
