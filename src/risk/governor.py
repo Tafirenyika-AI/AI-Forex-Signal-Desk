@@ -20,6 +20,7 @@ from sqlalchemy.engine import Engine
 from src.data.db import risk_state as risk_state_table
 from src.data.db import risk_state_weekly as risk_state_weekly_table
 from src.data.db import upsert_insert as insert
+from src.models.track_record import instrument_reliability_multiplier
 
 # --- sec. 8 controls (defaults) ---
 RISK_PER_TRADE_PCT = 0.0025  # 0.25% of equity, per sec. 8 default
@@ -417,7 +418,14 @@ def evaluate(
     confidence_multiplier = CONFIDENCE_SIZE_FLOOR + (1.0 - CONFIDENCE_SIZE_FLOOR) * min(
         1.0, max(0.0, (confidence - MIN_CONFIDENCE) / confidence_span)
     )
-    size_multiplier = regime_multiplier * confidence_multiplier
+    # User-requested 2026-08-14 ("maximize profit on instruments which are
+    # profitable"): a real, self-relative per-instrument track record,
+    # same never-boost-only-dampen invariant as regime/confidence above —
+    # see src/models/track_record.py's docstring for the full derivation
+    # and the real one-directional-trend trap (USD_TRY, 100% hit rate but
+    # 306/306 BUY-only) its two-sided-evidence guard exists to catch.
+    track_record_multiplier, track_record_detail = instrument_reliability_multiplier(engine, user_id, instrument)
+    size_multiplier = regime_multiplier * confidence_multiplier * track_record_multiplier
     risk_amount_usd = account_balance * risk_pct * size_multiplier
     try:
         per_unit_usd_risk = stop_distance * usd_value_per_unit(instrument, current_price, usd_rates)
@@ -428,7 +436,8 @@ def evaluate(
     size_units = int(risk_amount_usd / per_unit_usd_risk) if per_unit_usd_risk > 0 else 0
     size_detail = (
         f"{size_units} units at {risk_pct:.2%} risk (${risk_amount_usd:.2f}) "
-        f"[regime x{regime_multiplier:.2f}, confidence x{confidence_multiplier:.2f}]"
+        f"[regime x{regime_multiplier:.2f}, confidence x{confidence_multiplier:.2f}, "
+        f"track_record x{track_record_multiplier:.2f} ({track_record_detail})]"
     )
     if not gate("sizing", size_units > 0, size_detail):
         return RiskDecision(False, "computed size is zero", None, gates)

@@ -73,6 +73,7 @@ from src.models.calibration import MIN_SEGMENT_SAMPLES as calibration_MIN_SEGMEN
 from src.models.calibration import all_reports as calibration_all_reports
 from src.models.currency_strength import compute_all_currency_strengths
 from src.models.train_meta_model import MIN_SAMPLES, MODEL_NAME
+from src.models.track_record import all_track_records
 from src.models.trading_sessions import current_session_state
 from src.risk import governor as risk_governor
 from src.run_loop import run_once
@@ -1905,6 +1906,38 @@ with tab_risk:
                 st.caption("No weekly baseline recorded yet.")
     except Exception as exc:  # noqa: BLE001
         st.caption(f"Could not compute loss usage: {exc!r}")
+
+    st.write("")
+    st.markdown("#### Per-instrument track record")
+    st.caption(
+        "User-requested 2026-08-14: position sizing is dampened (never boosted — same "
+        "never-increase-beyond-baseline rule every other multiplier here follows) for "
+        "instruments with a poor or unproven real hit rate, so genuinely reliable pairs "
+        "end up carrying more of the book's risk without ever inflating confidence in "
+        "something that hasn't earned it. 'One-sided' means every signal so far has been "
+        "the same direction (e.g. a real trend that never happened to reverse) — that's "
+        "deliberately NOT trusted as proven skill until the other direction has real "
+        "evidence too (found live: USD_TRY showed a 100% hit rate that was 306/306 BUY-only)."
+    )
+    try:
+        records = all_track_records(engine, CURRENT_USER_ID)
+        if records:
+            track_df = pd.DataFrame([
+                {
+                    "Instrument": r.instrument,
+                    "Signals": r.n,
+                    "Hit rate": f"{r.hit_rate:.0%}" if r.hit_rate is not None else "—",
+                    "BUY / SELL": f"{r.buy_n} / {r.sell_n}",
+                    "Two-sided evidence": "✅" if r.two_sided else "—",
+                    "Size multiplier": f"x{r.multiplier:.2f}",
+                }
+                for r in records
+            ])
+            section_card(lambda: st.dataframe(track_df, width="stretch", hide_index=True))
+        else:
+            empty_state("No scored signals yet — accumulating evidence.")
+    except Exception as exc:  # noqa: BLE001
+        st.caption(f"Could not compute track records: {exc!r}")
 
     st.write("")
     st.markdown("#### What's actually been rejecting trades")
