@@ -390,7 +390,15 @@ trade_outcomes = Table(
     Column("instrument", String, nullable=False),
     Column("action", String, nullable=False),  # BUY / SELL
     Column("units", Integer, nullable=False),
-    Column("entry_price", Float, nullable=False),
+    # nullable: real production gap found live 2026-08-18 — OANDA's
+    # transaction ledger doesn't always retain the ORDER_FILL that opened a
+    # trade long enough for src/outcomes/tracker.py's sync to find it
+    # later (confirmed live: /transactions/idrange omitted specific
+    # transaction IDs entirely, and even a direct per-ID GET for them
+    # returned nothing — genuinely gone, not a fetch-window bug). Honestly
+    # null here rather than a value that looks real but isn't; the
+    # dashboard already renders "—" for a null entry_price.
+    Column("entry_price", Float, nullable=True),
     Column("exit_price", Float, nullable=False),
     Column("realized_pl_usd", Float, nullable=False),
     Column("opened_at", DateTime(timezone=True), nullable=True),

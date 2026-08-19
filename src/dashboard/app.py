@@ -414,15 +414,25 @@ def empty_state(message: str) -> None:
 def trade_card_html(instrument: str, action: str, outcome: str, pl: float,
                      entry: float, exit_: float, opened, closed, duration: str,
                      units: int, execution_mode: str) -> str:
+    # Real production crash 2026-08-18: a trade_outcomes row with a null
+    # opened_at/closed_at (or entry/exit price) raised TypeError trying to
+    # apply a date/float format spec to None. The caller already falls
+    # back to "—" for `duration` when either timestamp is missing — this
+    # extends the same honest-degrade fallback to the fields formatted
+    # directly here, so a display function never crashes on missing data.
     pl_class = "positive" if pl > 0 else ("negative" if pl < 0 else "")
+    opened_str = f"{opened:%b %d %H:%M}" if opened is not None else "—"
+    closed_str = f"{closed:%b %d %H:%M}" if closed is not None else "—"
+    entry_str = f"{entry:.5f}" if entry is not None else "—"
+    exit_str = f"{exit_:.5f}" if exit_ is not None else "—"
     return (
         '<div class="af-trade-card"><div class="af-trade-row">'
         f'<div><span class="af-trade-title">{instrument} · {action}</span> '
         f'{outcome_badge(outcome)}</div>'
         f'<div class="af-pl-value {pl_class}">${pl:+,.2f}</div>'
         '</div>'
-        f'<div class="af-stat-sub">Entry {entry:.5f} → Exit {exit_:.5f} '
-        f'&nbsp;·&nbsp; {opened:%b %d %H:%M} → {closed:%b %d %H:%M} UTC ({duration}) '
+        f'<div class="af-stat-sub">Entry {entry_str} → Exit {exit_str} '
+        f'&nbsp;·&nbsp; {opened_str} → {closed_str} UTC ({duration}) '
         f'&nbsp;·&nbsp; {units} units, {execution_mode}</div>'
         '</div>'
     )

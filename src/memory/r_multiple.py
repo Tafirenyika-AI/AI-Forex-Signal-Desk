@@ -12,12 +12,16 @@ from src.risk.governor import usd_value_per_unit
 
 def compute_r_multiple(
     instrument: str,
-    entry_price: float,
+    entry_price: float | None,
     stop_distance: float | None,
     units: int,
     realized_pl_usd: float,
 ) -> float | None:
-    if not stop_distance or stop_distance <= 0 or units == 0:
+    # entry_price can be genuinely unknown now (real gap found live
+    # 2026-08-18: OANDA's transaction ledger doesn't always retain the
+    # opening fill) — honestly "can't compute" rather than crashing,
+    # same convention as the other unresolvable cases below.
+    if entry_price is None or not stop_distance or stop_distance <= 0 or units == 0:
         return None
     try:
         per_unit_usd_risk = stop_distance * usd_value_per_unit(instrument, entry_price)

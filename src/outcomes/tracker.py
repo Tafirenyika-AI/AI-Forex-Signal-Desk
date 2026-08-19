@@ -87,7 +87,14 @@ async def sync_outcomes(engine: Engine, broker: OandaBroker, user_id: int, execu
                     instrument=txn["instrument"],
                     action="BUY" if opening_units > 0 else "SELL",
                     units=abs(opening_units),
-                    entry_price=float(opening_txn["price"]) if opening_txn else float(closed["price"]),
+                    # Honestly None when the opening fill can't be resolved
+                    # (real gap found live 2026-08-18: OANDA's transaction
+                    # ledger doesn't always retain it — confirmed even a
+                    # direct per-ID fetch returns nothing, not just a
+                    # narrow-window issue) — never the closing price as a
+                    # stand-in, which would silently look like a real entry
+                    # price while actually just restating the exit price.
+                    entry_price=float(opening_txn["price"]) if opening_txn else None,
                     exit_price=float(txn["price"]),
                     realized_pl_usd=realized_pl,
                     opened_at=parse_oanda_time(opening_txn["time"]) if opening_txn else None,
