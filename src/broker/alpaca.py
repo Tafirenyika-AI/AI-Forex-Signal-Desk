@@ -48,9 +48,12 @@ ALPACA_DATA_HOST = "https://data.alpaca.markets"
 MAX_CONCURRENT_REQUESTS = 8
 RATE_LIMIT_RETRY_DELAY_SECONDS = 2.0
 
-# Only granularities src/run_loop.py's HORIZON_CONFIGS actually uses.
-_GRANULARITY_TO_ALPACA = {"M15": "15Min", "H1": "1Hour"}
-_GRANULARITY_MINUTES = {"M15": 15, "H1": 60}
+# M15/H1 are all src/run_loop.py's HORIZON_CONFIGS actually uses; H4/D
+# added so the dashboard's Markets tab (free browsing at any granularity,
+# not just the trading horizons) doesn't send OANDA's raw "H4"/"D" strings
+# straight through to Alpaca's API, which doesn't recognize them.
+_GRANULARITY_TO_ALPACA = {"M15": "15Min", "H1": "1Hour", "H4": "4Hour", "D": "1Day"}
+_GRANULARITY_MINUTES = {"M15": 15, "H1": 60, "H4": 240, "D": 1440}
 
 # How long to poll a just-submitted crypto market order for its fill before
 # giving up on attaching a protective stop — crypto market orders on
@@ -226,6 +229,21 @@ class AlpacaBroker(BrokerAdapter):
         start: datetime | None = None, end: datetime | None = None,
     ) -> list[Candle]:
         timeframe = _GRANULARITY_TO_ALPACA.get(granularity, granularity)
+        now = datetime.now(timezone.utc)
+        granularity_minutes = _GRANULARITY_MINUTES.get(granularity, 15)
+
+        # Real gap found live 2026-08-22: a count-only request (no explicit
+        # start/end) at H4/D granularity came back {"bars": null} from
+        # Alpaca — a start date DOES return real data, so this isn't "no
+        # history exists," just that Alpaca's own "recent window" default
+        # doesn't reliably cover N bars at the coarser granularities. A
+        # generous explicit start (2x the nominal window) makes a
+        # count-only call behave the way callers actually expect: "the
+        # last ~count bars," not "whatever Alpaca's undocumented default
+        # window happens to include."
+        if count is not None and start is None:
+            start = now - timedelta(minutes=granularity_minutes * count * 2)
+
         params: dict[str, Any] = {"timeframe": timeframe}
         if count is not None:
             params["limit"] = count
@@ -234,20 +252,20 @@ class AlpacaBroker(BrokerAdapter):
         if end is not None:
             params["end"] = end.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        now = datetime.now(timezone.utc)
-        granularity_minutes = _GRANULARITY_MINUTES.get(granularity, 15)
-
         if asset_class_for(instrument) == "crypto":
             data = await self._request(
                 self._data_client, "GET", "/v1beta3/crypto/us/bars",
                 params={**params, "symbols": instrument},
             )
-            raw_bars = data.get("bars", {}).get(instrument, [])
+            # .get(..., {}) still needs "or {}" — Alpaca returns a literal
+            # {"bars": null} rather than {} for a symbol with nothing in
+            # range, same quirk as the equities endpoint below.
+            raw_bars = (data.get("bars") or {}).get(instrument) or []
         else:
             data = await self._request(
                 self._data_client, "GET", f"/v2/stocks/{instrument}/bars", params=params,
             )
-            raw_bars = data.get("bars", [])
+            raw_bars = data.get("bars") or []
 
         candles = []
         for b in raw_bars:

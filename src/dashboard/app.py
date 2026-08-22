@@ -110,6 +110,16 @@ DESIGN_CSS = """
   --af-neutral-bg: rgba(137,135,129,0.14);
   --af-accent: #2a78d6;
   --af-accent-bg: rgba(42,120,214,0.10);
+  /* Asset-class identity colors (forex/equity/crypto) — slots 1-3 of the
+     dataviz skill's validated categorical theme (references/palette.md),
+     the same theme --af-accent above already draws slot 1 from. These
+     three specifically validate all-pairs CVD/normal-vision separation in
+     both light and dark, which matters here since all three can appear
+     adjacent in the same badge row/legend. */
+  --af-equity: #eb6834;
+  --af-equity-bg: rgba(235,104,52,0.12);
+  --af-crypto: #1baf7a;
+  --af-crypto-bg: rgba(27,175,122,0.12);
 
   /* Token scale (added for the platform redesign) — spacing/radius/shadow/
      type steps, extending the roles above rather than replacing them. Most
@@ -172,6 +182,10 @@ DESIGN_CSS = """
     --af-neutral-bg: rgba(137,135,129,0.18);
     --af-accent: #3987e5;
     --af-accent-bg: rgba(57,135,229,0.14);
+    --af-equity: #d95926;
+    --af-equity-bg: rgba(217,89,38,0.16);
+    --af-crypto: #199e70;
+    --af-crypto-bg: rgba(25,158,112,0.16);
   }
 }
 .af-stat-tile {
@@ -216,6 +230,9 @@ DESIGN_CSS = """
 .af-badge-win { color: var(--af-good-text); background: var(--af-good-bg); }
 .af-badge-loss { color: var(--af-bad-text); background: var(--af-bad-bg); }
 .af-badge-neutral { color: var(--af-neutral-text); background: var(--af-neutral-bg); }
+.af-badge-forex { color: var(--af-accent); background: var(--af-accent-bg); }
+.af-badge-equity { color: var(--af-equity); background: var(--af-equity-bg); }
+.af-badge-crypto { color: var(--af-crypto); background: var(--af-crypto-bg); }
 .af-trade-card {
   border: 1px solid var(--af-border);
   border-radius: var(--af-radius-md);
@@ -390,6 +407,21 @@ def outcome_badge(outcome: str) -> str:
     return f'<span class="af-badge {cls}">{label}</span>'
 
 
+ASSET_CLASS_LABELS = {"forex": "FOREX · OANDA", "equity": "EQUITY · Alpaca", "crypto": "CRYPTO · Alpaca"}
+BROKER_LABELS = {"oanda": "OANDA", "alpaca": "Alpaca"}
+
+
+def asset_class_badge_html(instrument: str) -> str:
+    """Identity badge (which broker/market this instrument trades on) —
+    color-coded by asset class using the dataviz skill's validated
+    categorical slots 1-3 (see the :root/dark-mode CSS above), same fixed
+    hue-per-category assignment used everywhere else in this system, never
+    cycled or reused for anything else."""
+    asset_class = asset_class_for(instrument)
+    label = ASSET_CLASS_LABELS.get(asset_class, asset_class.upper())
+    return f'<span class="af-badge af-badge-{asset_class}">{label}</span>'
+
+
 def section_card(render_fn) -> None:
     """Wraps render_fn()'s output in the .af-section-card chrome.
 
@@ -430,7 +462,7 @@ def trade_card_html(instrument: str, action: str, outcome: str, pl: float,
     return (
         '<div class="af-trade-card"><div class="af-trade-row">'
         f'<div><span class="af-trade-title">{instrument} · {action}</span> '
-        f'{outcome_badge(outcome)}</div>'
+        f'{outcome_badge(outcome)} {asset_class_badge_html(instrument)}</div>'
         f'<div class="af-pl-value {pl_class}">${pl:+,.2f}</div>'
         '</div>'
         f'<div class="af-stat-sub">Entry {entry_str} → Exit {exit_str} '
@@ -559,6 +591,47 @@ def current_pl_pct(kill_state: dict | None, week_row, mode: str) -> tuple[float 
     if week_row and week_row["week_start_balance"]:
         state, _ = cached_account_state(account_mode, CURRENT_USER_ID)
         weekly_pl_pct = (state.nav - week_row["week_start_balance"]) / week_row["week_start_balance"]
+    return daily_pl_pct, weekly_pl_pct
+
+
+def pl_pct_for_broker(broker_kind: str, mode: str) -> tuple[float | None, float | None]:
+    """Same idea as current_pl_pct, but scoped to one broker's own
+    risk_state/risk_state_weekly row and own account NAV — each broker has
+    independent kill-switch/loss-limit state now (governor.py keys it
+    (user_id, day/iso_week, broker)), so a single blended reading would be
+    wrong the moment both brokers have real state on the same day."""
+    now = datetime.now(timezone.utc)
+    day_key = now.strftime("%Y-%m-%d")
+    week_key = f"{now.isocalendar()[0]}-W{now.isocalendar()[1]:02d}"
+    with engine.connect() as conn:
+        day_row = conn.execute(
+            select(risk_state).where(
+                risk_state.c.user_id == CURRENT_USER_ID, risk_state.c.day == day_key,
+                risk_state.c.broker == broker_kind,
+            )
+        ).mappings().first()
+        broker_week_row = conn.execute(
+            select(risk_state_weekly_table).where(
+                risk_state_weekly_table.c.user_id == CURRENT_USER_ID,
+                risk_state_weekly_table.c.iso_week == week_key,
+                risk_state_weekly_table.c.broker == broker_kind,
+            )
+        ).mappings().first()
+
+    if broker_kind == "alpaca":
+        if not _alpaca_configured():
+            return None, None
+        state, _ = cached_alpaca_account_state(CURRENT_USER_ID)
+    else:
+        account_mode = mode if mode != "shadow" else "demo"
+        state, _ = cached_account_state(account_mode, CURRENT_USER_ID)
+
+    daily_pl_pct = None
+    weekly_pl_pct = None
+    if day_row and day_row["day_start_balance"]:
+        daily_pl_pct = (state.nav - day_row["day_start_balance"]) / day_row["day_start_balance"]
+    if broker_week_row and broker_week_row["week_start_balance"]:
+        weekly_pl_pct = (state.nav - broker_week_row["week_start_balance"]) / broker_week_row["week_start_balance"]
     return daily_pl_pct, weekly_pl_pct
 
 
@@ -1011,7 +1084,14 @@ def render_sidebar_ticker(instruments: tuple[str, ...]) -> None:
 
 
 _prefs = user_auth_service.get_preferences(engine, CURRENT_USER_ID)
-_watch_instruments = tuple((json.loads(_prefs["instrument_list_json"]) if _prefs and _prefs.get("instrument_list_json") else ["EUR_USD"])[:5])
+_all_instruments = tuple(
+    json.loads(_prefs["instrument_list_json"]) if _prefs and _prefs.get("instrument_list_json") else ["EUR_USD"]
+)
+# Capped to 5 for the compact sidebar ticker only — the Markets tab below
+# uses the full _all_instruments list instead, grouped by asset class, so
+# instruments past position 5 (which used to mean every Alpaca instrument,
+# since they're appended after the 68 forex pairs) are still reachable.
+_watch_instruments = _all_instruments[:5]
 
 if _brand_logo:
     st.sidebar.markdown(
@@ -1227,7 +1307,18 @@ with tab_markets:
         "candlestick_figure() used inline on 🚦 Pending Signals, here for browsing "
         "any of your watched instruments at any granularity."
     )
-    market_instruments = _watch_instruments if _watch_instruments else ("EUR_USD",)
+    _all_watch = _all_instruments if _all_instruments else ("EUR_USD",)
+    _by_class: dict[str, list[str]] = {}
+    for _inst in _all_watch:
+        _by_class.setdefault(asset_class_for(_inst), []).append(_inst)
+    _available_market_classes = [c for c in ("forex", "equity", "crypto") if _by_class.get(c)]
+
+    market_class = st.radio(
+        "Market", options=_available_market_classes, horizontal=True, key="market_asset_class",
+        format_func=lambda c: ASSET_CLASS_LABELS.get(c, c.upper()),
+    )
+    market_instruments = sorted(_by_class.get(market_class, _all_watch))
+
     mc1, mc2 = st.columns([2, 1])
     with mc1:
         market_instrument = st.selectbox("Instrument", market_instruments, key="market_instrument")
@@ -1325,12 +1416,24 @@ with tab_signals:
             "here is sized for it."
         )
     else:
-        st.caption("Filter by how often you trade — each horizon is an independent signal, not a subset of another.")
-        horizon_filter = st.multiselect(
-            "Horizon", options=available_horizons, default=available_horizons,
-            format_func=lambda h: f"{h} ({HORIZON_STYLE_HINT.get(h, '')})",
-        )
-        pending = [p for p in all_pending if p["horizon"] in horizon_filter]
+        available_classes = sorted({asset_class_for(p["instrument"]) for p in all_pending})
+        f1, f2 = st.columns([3, 2])
+        with f1:
+            st.caption("Filter by how often you trade — each horizon is an independent signal, not a subset of another.")
+            horizon_filter = st.multiselect(
+                "Horizon", options=available_horizons, default=available_horizons,
+                format_func=lambda h: f"{h} ({HORIZON_STYLE_HINT.get(h, '')})",
+            )
+        with f2:
+            st.caption("Filter by market.")
+            class_filter = st.multiselect(
+                "Market", options=available_classes, default=available_classes,
+                format_func=lambda c: ASSET_CLASS_LABELS.get(c, c.upper()),
+            )
+        pending = [
+            p for p in all_pending
+            if p["horizon"] in horizon_filter and asset_class_for(p["instrument"]) in class_filter
+        ]
         pending.sort(key=lambda p: (HORIZON_ORDER.get(p["horizon"], 99), -p["confidence"]))
 
         instruments = tuple(sorted({p["instrument"] for p in pending}))
@@ -1354,6 +1457,7 @@ with tab_signals:
                 header_col, meta_col = st.columns([3, 2])
                 with header_col:
                     st.subheader(f"{action_icon} {intent['instrument']} — {intent['action']}")
+                    st.markdown(asset_class_badge_html(intent["instrument"]), unsafe_allow_html=True)
                     st.caption(
                         f"Signal generated {intent['time']:%Y-%m-%d %H:%M UTC} · "
                         f"{intent['age_seconds']/60:.0f} min ago · execution_mode={intent['execution_mode']}"
@@ -1484,6 +1588,16 @@ with tab_trades:
             "profit/loss detail and the exact reasoning behind the original decision."
         )
     else:
+        available_classes = sorted({asset_class_for(o["instrument"]) for o in outcomes})
+        class_filter = st.multiselect(
+            "Market", options=available_classes, default=available_classes,
+            format_func=lambda c: ASSET_CLASS_LABELS.get(c, c.upper()), key="trade_history_class_filter",
+        )
+        outcomes = [o for o in outcomes if asset_class_for(o["instrument"]) in class_filter]
+        if not outcomes:
+            st.info("No trades match the current market filter.")
+
+    if outcomes:
         df = pd.DataFrame(outcomes)
         total_pl = df["realized_pl_usd"].sum()
         wins = int((df["outcome"] == "WIN").sum())
@@ -1958,59 +2072,73 @@ with tab_risk:
 
     st.write("")
     st.markdown("#### Current state")
-    kill_state = get_kill_switch_state()
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if kill_state and kill_state["kill_switch_active"]:
-            stat_tile("Kill switch", "🔴 ACTIVE", kill_state["kill_switch_reason"] or "", polarity="negative")
-        else:
-            stat_tile("Kill switch", "🟢 clear", "")
+    st.caption(
+        "OANDA and Alpaca each have their own real account balance, so the kill switch and "
+        "daily/weekly loss limits are tracked independently per broker — one broker's bad "
+        "day never trips (or masks) the other's."
+    )
+    broker_kinds_present = ["oanda"] + (["alpaca"] if _alpaca_configured() else [])
+    kill_cols = st.columns(len(broker_kinds_present))
+    for bk, col in zip(broker_kinds_present, kill_cols):
+        day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        with engine.connect() as conn:
+            broker_day_state = conn.execute(
+                select(risk_state).where(
+                    risk_state.c.user_id == CURRENT_USER_ID, risk_state.c.day == day_key,
+                    risk_state.c.broker == bk,
+                )
+            ).mappings().first()
+        with col:
+            if broker_day_state and broker_day_state["kill_switch_active"]:
+                stat_tile(f"Kill switch — {BROKER_LABELS[bk]}", "🔴 ACTIVE",
+                          broker_day_state["kill_switch_reason"] or "", polarity="negative")
+            else:
+                stat_tile(f"Kill switch — {BROKER_LABELS[bk]}", "🟢 clear", "")
+
+    st.write("")
+    c2, c3 = st.columns(2)
     with c2:
         with engine.connect() as conn:
             open_count_paper = conn.execute(
                 select(func.count()).select_from(trade_intents)
                 .where(trade_intents.c.status == "AUTO_EXECUTED", trade_intents.c.user_id == CURRENT_USER_ID)
             ).scalar()
-        stat_tile("Auto-executed today", str(open_count_paper or 0), "trades sent without waiting for human review")
+        stat_tile("Auto-executed today", str(open_count_paper or 0),
+                  "trades sent without waiting for human review, across every market")
     with c3:
         with engine.connect() as conn:
             rejected_count = conn.execute(
                 select(func.count()).select_from(trade_intents)
                 .where(trade_intents.c.status == "RISK_REJECTED", trade_intents.c.user_id == CURRENT_USER_ID)
             ).scalar()
-        stat_tile("Risk-rejected (all time)", str(rejected_count or 0), "signals the governor vetoed")
+        stat_tile("Risk-rejected (all time)", str(rejected_count or 0),
+                  "signals the governor vetoed, across every market")
 
     st.write("")
     st.markdown("#### Daily / weekly loss usage")
-    with engine.connect() as conn:
-        week_key = f"{datetime.now(timezone.utc).isocalendar()[0]}-W{datetime.now(timezone.utc).isocalendar()[1]:02d}"
-        week_row = conn.execute(
-            select(risk_state_weekly_table).where(
-                risk_state_weekly_table.c.user_id == CURRENT_USER_ID,
-                risk_state_weekly_table.c.iso_week == week_key,
-            )
-        ).mappings().first()
-    try:
-        daily_pl_pct, weekly_pl_pct = current_pl_pct(kill_state, week_row, scan_mode)
-        m1, m2 = st.columns(2)
-        with m1:
-            if daily_pl_pct is not None:
-                st.plotly_chart(
-                    loss_meter_figure(daily_pl_pct, risk_governor.DAILY_LOSS_LIMIT_PCT, "Daily"),
-                    width="stretch", config={"displayModeBar": False}, key="loss_meter_daily",
-                )
-            else:
-                st.caption("No daily baseline recorded yet.")
-        with m2:
-            if weekly_pl_pct is not None:
-                st.plotly_chart(
-                    loss_meter_figure(weekly_pl_pct, risk_governor.WEEKLY_LOSS_LIMIT_PCT, "Weekly"),
-                    width="stretch", config={"displayModeBar": False}, key="loss_meter_weekly",
-                )
-            else:
-                st.caption("No weekly baseline recorded yet.")
-    except Exception as exc:  # noqa: BLE001
-        st.caption(f"Could not compute loss usage: {exc!r}")
+    for bk in broker_kinds_present:
+        st.markdown(f"**{BROKER_LABELS[bk]}**")
+        try:
+            daily_pl_pct, weekly_pl_pct = pl_pct_for_broker(bk, scan_mode)
+            m1, m2 = st.columns(2)
+            with m1:
+                if daily_pl_pct is not None:
+                    st.plotly_chart(
+                        loss_meter_figure(daily_pl_pct, risk_governor.DAILY_LOSS_LIMIT_PCT, "Daily"),
+                        width="stretch", config={"displayModeBar": False}, key=f"loss_meter_daily_{bk}",
+                    )
+                else:
+                    st.caption("No daily baseline recorded yet.")
+            with m2:
+                if weekly_pl_pct is not None:
+                    st.plotly_chart(
+                        loss_meter_figure(weekly_pl_pct, risk_governor.WEEKLY_LOSS_LIMIT_PCT, "Weekly"),
+                        width="stretch", config={"displayModeBar": False}, key=f"loss_meter_weekly_{bk}",
+                    )
+                else:
+                    st.caption("No weekly baseline recorded yet.")
+        except Exception as exc:  # noqa: BLE001
+            st.caption(f"Could not compute loss usage: {exc!r}")
 
     st.write("")
     st.markdown("#### Per-instrument track record")
@@ -2029,6 +2157,7 @@ with tab_risk:
         if records:
             track_df = pd.DataFrame([
                 {
+                    "Market": ASSET_CLASS_LABELS.get(asset_class_for(r.instrument), "").split(" · ")[0],
                     "Instrument": r.instrument,
                     "Signals": r.n,
                     "Hit rate": f"{r.hit_rate:.0%}" if r.hit_rate is not None else "—",
@@ -2123,10 +2252,12 @@ with tab_history:
                             orders_fills.c.user_id == CURRENT_USER_ID,
                         )
                     ).mappings().first()
+                _instrument = h["intent"]["instrument"] if h["intent"] else None
                 rows.append(
                     {
                         "authorized_at": h["authorized_at"],
-                        "instrument": h["intent"]["instrument"] if h["intent"] else None,
+                        "market": ASSET_CLASS_LABELS.get(asset_class_for(_instrument), "").split(" · ")[0] if _instrument else None,
+                        "instrument": _instrument,
                         "action": h["intent"]["action"] if h["intent"] else None,
                         "decision": h["decision"],
                         "authorized_by": h["authorized_by"],
@@ -2148,8 +2279,9 @@ with tab_all:
         ).mappings().all()
     if rows:
         df = pd.DataFrame([dict(r) for r in rows])
+        df["market"] = df["instrument"].map(lambda i: ASSET_CLASS_LABELS.get(asset_class_for(i), "").split(" · ")[0])
         section_card(lambda: st.dataframe(
-            df[["time", "instrument", "horizon", "action", "confidence", "regime", "status", "execution_mode"]],
+            df[["time", "market", "instrument", "horizon", "action", "confidence", "regime", "status", "execution_mode"]],
             width="stretch", hide_index=True,
         ))
     else:
