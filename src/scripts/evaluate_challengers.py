@@ -26,10 +26,13 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import select
 
+from src.broker.alpaca import AlpacaBroker
 from src.broker.oanda import OandaBroker
+from src.broker.registry import broker_kind_for
 from src.challengers.definitions import CHALLENGERS, active_challengers
 from src.config import load_settings
 from src.data.db import challenger_decisions as challenger_decisions_table
@@ -62,7 +65,7 @@ def _naive_to_utc(row: dict) -> dict:
 
 
 async def _expiry_price(
-    broker: OandaBroker, instrument: str, horizon: str, signal_time: datetime, now: datetime,
+    brokers: dict[str, Any], instrument: str, horizon: str, signal_time: datetime, now: datetime,
 ) -> float | None:
     cfg = _HORIZON_BY_LABEL.get(horizon)
     if cfg is None:
@@ -73,6 +76,13 @@ async def _expiry_price(
     to_time = min(target + EXPIRY_SEARCH_BUFFER, now)
     if to_time <= target:
         return None  # not enough elapsed real time yet to search a window at all
+    # Real gap found live 2026-08-21: this used to hardcode a single
+    # OandaBroker, which would raise (and crash this whole scheduled job,
+    # not just skip one signal — no per-row try/except existed) the moment
+    # any Alpaca-instrument trade_intent became eligible for scoring.
+    broker = brokers.get(broker_kind_for(instrument))
+    if broker is None:
+        return None  # that broker isn't configured for this user — nothing to score against
     candles = await broker.get_candles_range(instrument, cfg.granularity, target, to_time)
     if not candles:
         return None
@@ -125,12 +135,12 @@ async def _pending_challenger_signals(engine, now: datetime) -> list[dict]:
     return pending
 
 
-async def _score_and_store(engine, broker, *, source: str, trade_intent_id: int, instrument: str,
+async def _score_and_store(engine, brokers: dict[str, Any], *, source: str, trade_intent_id: int, instrument: str,
                             horizon: str, action: str, signal_time: datetime, reference_price: float | None,
                             now: datetime, user_id: int | None) -> bool:
     if reference_price is None:
         return False  # older rows predating this column, or an unlinkable manual trade — can't score
-    expiry_price = await _expiry_price(broker, instrument, horizon, signal_time, now)
+    expiry_price = await _expiry_price(brokers, instrument, horizon, signal_time, now)
     if expiry_price is None:
         return False
     move_in_favor = (expiry_price - reference_price) if action == "BUY" else (reference_price - expiry_price)
@@ -187,7 +197,9 @@ def _review_for_graveyard(engine, now: datetime) -> None:
 async def main() -> None:
     settings = load_settings()
     engine = get_engine(settings.db_path)
-    broker = OandaBroker(settings)
+    brokers: dict[str, Any] = {"oanda": OandaBroker(settings)}
+    if settings.alpaca_api_key:
+        brokers["alpaca"] = AlpacaBroker(settings)
     now = datetime.now(timezone.utc)
 
     try:
@@ -195,7 +207,7 @@ async def main() -> None:
         scored = 0
         for row in champion_pending:
             ok = await _score_and_store(
-                engine, broker, source="champion", trade_intent_id=row["id"], instrument=row["instrument"],
+                engine, brokers, source="champion", trade_intent_id=row["id"], instrument=row["instrument"],
                 horizon=row["horizon"], action=row["action"], signal_time=row["time"],
                 reference_price=row["reference_price"], now=now, user_id=row.get("user_id"),
             )
@@ -206,7 +218,7 @@ async def main() -> None:
         scored = 0
         for row in challenger_pending:
             ok = await _score_and_store(
-                engine, broker, source=row["challenger_name"], trade_intent_id=row["trade_intent_id"],
+                engine, brokers, source=row["challenger_name"], trade_intent_id=row["trade_intent_id"],
                 instrument=row["instrument"], horizon=row["horizon"], action=row["action"],
                 signal_time=row["computed_at"], reference_price=row["reference_price"], now=now,
                 user_id=row.get("user_id"),
@@ -216,7 +228,8 @@ async def main() -> None:
 
         _review_for_graveyard(engine, now)
     finally:
-        await broker.close()
+        for broker in brokers.values():
+            await broker.close()
 
 
 if __name__ == "__main__":

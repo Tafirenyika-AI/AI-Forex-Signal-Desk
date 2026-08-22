@@ -519,6 +519,16 @@ def cached_account_state(mode: str, user_id: int):
     return run_async(_fetch_account_state(mode))
 
 
+async def _fetch_alpaca_account_state():
+    async with AlpacaBroker(settings) as broker:
+        return await broker.account_state(), await broker.positions()
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def cached_alpaca_account_state(user_id: int):
+    return run_async(_fetch_alpaca_account_state())
+
+
 def current_pl_pct(kill_state: dict | None, week_row, mode: str) -> tuple[float | None, float | None]:
     """(daily_pl_pct, weekly_pl_pct) — None where that baseline hasn't been
     recorded yet. Read-only: computed from cached_account_state's live NAV
@@ -1887,6 +1897,26 @@ with tab_account:
         else:
             st.caption("No open positions.")
         st.divider()
+
+    st.subheader("📈 Alpaca account (equities + crypto, paper)")
+    if not settings.alpaca_api_key:
+        st.caption("Alpaca isn't configured for this account yet.")
+    else:
+        try:
+            alpaca_state, alpaca_positions = cached_alpaca_account_state(CURRENT_USER_ID)
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"Could not load Alpaca account: {exc!r}")
+        else:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Balance", f"${alpaca_state.balance:,.2f}")
+            c2.metric("NAV", f"${alpaca_state.nav:,.2f}")
+            c3.metric("Unrealized P/L", f"${alpaca_state.unrealized_pl:,.2f}")
+            c4.metric("Open positions", alpaca_state.open_position_count)
+
+            if alpaca_positions:
+                st.dataframe(pd.DataFrame(alpaca_positions), width="stretch", hide_index=True)
+            else:
+                st.caption("No open positions.")
 
 # -------------------------------------------------------------- risk center --
 with tab_risk:
