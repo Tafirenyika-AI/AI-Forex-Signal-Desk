@@ -71,6 +71,10 @@ def _check_execution_error(spread: float | None, stop_distance: float | None) ->
 def _check_event_risk(
     engine: Engine, instrument: str, opened_at, closed_at,
 ) -> str | None:
+    # No currency-calendar concept for non-forex instruments (Alpaca
+    # equities/crypto) — nothing to attribute here.
+    if "_" not in instrument:
+        return None
     base, quote = instrument.split("_")
     currencies = {base, quote}
     with engine.connect() as conn:

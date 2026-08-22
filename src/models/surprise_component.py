@@ -26,7 +26,13 @@ def pair_surprise_score(surprise_rows: list[dict], pair: str, now: datetime) -> 
     scale-aware threshold as surprise_engine.is_meaningful_surprise()
     (max(0.05, |consensus| * 0.15)) rather than a new fixed magic number —
     a surprise right at that "meaningful" boundary scores +-1, bigger
-    surprises saturate there too (clipped, not unbounded)."""
+    surprises saturate there too (clipped, not unbounded).
+
+    Neutral (no opinion) for non-forex instruments (Alpaca equities/crypto)
+    — an economic-surprise score is currency-specific, not applicable to a
+    single-name ticker."""
+    if "_" not in pair:
+        return 0.0, 0.0
     base, quote = pair.split("_")
     contributions = []
     for row in surprise_rows:

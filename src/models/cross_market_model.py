@@ -79,6 +79,11 @@ def currency_cross_market_score(indicator_rows: list[dict[str, Any]], currency: 
 
 
 def pair_cross_market_score(indicator_rows: list[dict[str, Any]], pair: str) -> tuple[float, float]:
+    """Neutral (no opinion) for non-forex instruments (Alpaca equities/
+    crypto) — a currency-differential score doesn't apply to a single-name
+    ticker."""
+    if "_" not in pair:
+        return 0.0, 0.0
     base, quote = pair.split("_")
     base_score, base_conf = currency_cross_market_score(indicator_rows, base)
     quote_score, quote_conf = currency_cross_market_score(indicator_rows, quote)

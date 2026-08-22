@@ -108,7 +108,16 @@ def check_calendar_event_risk(
     The lockout window is symmetric (before AND after the release) — there
     is no dedicated event-reaction strategy built yet (blueprint sec. 9), so
     the honest thing to do is stay flat through the release and the
-    immediate aftermath, not just up to T0."""
+    immediate aftermath, not just up to T0.
+
+    Non-forex instruments (Alpaca equities/crypto) have no currency-calendar
+    concept at all — this ForexFactory-sourced calendar only ever covers FX
+    currencies, so `calendar_covers_currency=True` (deliberately, not False)
+    lets the event gate downstream pass rather than reject every equity/
+    crypto trade for "no calendar coverage", which would otherwise
+    permanently lock them out."""
+    if "_" not in pair:
+        return True, False
     base, quote = pair.split("_")
     currencies = {base, quote}
     relevant = [
@@ -137,7 +146,18 @@ def usd_direction_of_trade(pair: str, action: str) -> str:
     silently miscounted as one side or the other — real bug this replaced,
     the old code fell through to treating any non-"_USD"-suffixed pair as
     if USD were the base, which is wrong for a pair where USD isn't
-    involved at all."""
+    involved at all.
+
+    Alpaca equities/crypto are USD-denominated directly (no base/quote
+    split at all), and their risk is genuinely different in kind from FX
+    correlation (single-name/market risk, not currency-pair risk) — tagged
+    with their own asset-class-specific direction so the correlation gate's
+    aggregate exposure buckets don't conflate a long AAPL position with a
+    long EUR_USD position."""
+    if "/" in pair:  # crypto, e.g. BTC/USD — always USD-quoted
+        return "crypto_long" if action == "BUY" else "crypto_short"
+    if "_" not in pair:  # equity ticker, e.g. AAPL — USD-denominated
+        return "equity_long" if action == "BUY" else "equity_short"
     base, quote = pair.split("_")
     if quote == "USD":
         return "long_usd" if action == "SELL" else "short_usd"
@@ -156,7 +176,15 @@ def usd_value_per_unit(pair: str, current_price: float, usd_rates: dict[str, flo
     a real batch price fetch of whichever direct-to-USD pair each currency
     actually has) supplies that. Still raises if a genuinely unavailable
     conversion is requested — fails loud rather than silently mispricing
-    risk, same posture as before this was generalized beyond USD-leg pairs."""
+    risk, same posture as before this was generalized beyond USD-leg pairs.
+
+    Alpaca equities (bare ticker, e.g. AAPL) and crypto (BASE/USD, e.g.
+    BTC/USD) are both already priced directly in USD — a $1 move in either
+    is exactly $1 of USD P&L per 1 unit of position, the same relationship
+    as a quote-is-USD FX pair, so this short-circuits to the same 1.0
+    before attempting a base/quote split that doesn't apply to them."""
+    if "/" in pair or "_" not in pair:
+        return 1.0
     base, quote = pair.split("_")
     if quote == "USD":
         return 1.0

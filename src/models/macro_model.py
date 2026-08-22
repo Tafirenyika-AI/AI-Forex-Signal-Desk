@@ -91,7 +91,11 @@ def currency_macro_score(
 def pair_macro_score(
     events: list[dict[str, Any]], pair: str, now: datetime | None = None
 ) -> tuple[float, float]:
-    """pair like 'EUR_USD' -> (base_score - quote_score) / 2, averaged confidence."""
+    """pair like 'EUR_USD' -> (base_score - quote_score) / 2, averaged confidence.
+    Neutral (no opinion) for non-forex instruments (Alpaca equities/crypto)
+    — a currency-differential score doesn't apply to a single-name ticker."""
+    if "_" not in pair:
+        return 0.0, 0.0
     base, quote = pair.split("_")
     base_score, base_conf = currency_macro_score(events, base, now)
     quote_score, quote_conf = currency_macro_score(events, quote, now)
