@@ -50,12 +50,15 @@ import pickle
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 from sqlalchemy import insert, select, update
 
 from src.auth.service import UserTradingContext, active_trading_users
+from src.broker.alpaca import AlpacaBroker
 from src.broker.oanda import OandaBroker
+from src.broker.registry import BrokerKind, asset_class_for, broker_kind_for
 from src.config import Settings, load_settings
 from src.challengers.definitions import Challenger, active_challengers
 from src.data.db import (
@@ -282,13 +285,25 @@ def _load_events(engine, table) -> list[dict]:
     return result
 
 
-def _normalized_positions(positions_raw: list[dict], execution_mode: str):
+def _normalized_positions(positions_raw: list[dict], broker_kind: BrokerKind, execution_mode: str):
+    """Shape of a raw position dict depends on which BROKER returned it, not
+    on execution_mode — execution_mode only distinguishes OANDA's real
+    position shape from PaperBroker's simulated one (PaperBroker only ever
+    wraps OANDA, never Alpaca, so that distinction still only matters
+    within the OANDA branch). Alpaca's own shape (from AlpacaBroker.
+    positions(), src/broker/alpaca.py) is a third, broker-specific case."""
     for p in positions_raw:
-        instrument = p["instrument"]
-        if execution_mode == "paper":
+        if broker_kind == "alpaca":
+            instrument = p["symbol"]
+            qty = float(p["qty"])
+            net_units = qty if p.get("side") == "long" else -qty
+            ref_price = float(p.get("avg_entry_price") or 0)
+        elif execution_mode == "paper":
+            instrument = p["instrument"]
             net_units = p["units"]
             ref_price = p["avg_price"]
         else:
+            instrument = p["instrument"]
             long_units = float(p.get("long", {}).get("units", "0") or 0)
             short_units = float(p.get("short", {}).get("units", "0") or 0)
             net_units = long_units + short_units
@@ -303,11 +318,13 @@ def _normalized_positions(positions_raw: list[dict], execution_mode: str):
 
 
 def compute_exposure(
-    positions_raw: list[dict], execution_mode: str, usd_rates: dict[str, float] | None = None,
+    positions_raw: list[dict], broker_kind: BrokerKind, execution_mode: str,
+    usd_rates: dict[str, float] | None = None,
 ) -> tuple[int, dict[str, float]]:
     open_count = 0
-    exposure = {"long_usd": 0.0, "short_usd": 0.0}
-    for instrument, net_units, ref_price in _normalized_positions(positions_raw, execution_mode):
+    exposure = {"long_usd": 0.0, "short_usd": 0.0, "equity_long": 0.0, "equity_short": 0.0,
+                "crypto_long": 0.0, "crypto_short": 0.0}
+    for instrument, net_units, ref_price in _normalized_positions(positions_raw, broker_kind, execution_mode):
         open_count += 1
         action = "BUY" if net_units > 0 else "SELL"
         key = risk_governor.usd_direction_of_trade(instrument, action)
@@ -317,7 +334,7 @@ def compute_exposure(
             notional = abs(net_units) * risk_governor.usd_value_per_unit(instrument, ref_price or 1.0, usd_rates)
         except ValueError:
             notional = 0.0
-        exposure[key] += notional
+        exposure[key] = exposure.get(key, 0.0) + notional
     return open_count, exposure
 
 
@@ -673,7 +690,6 @@ async def evaluate_pair(
     economic_surprises: list[dict],
     challengers: list[Challenger],
     account_state,
-    positions_raw: list[dict],
     open_count: int,
     exposure: dict[str, float],
     reconciliation_ok: bool,
@@ -698,13 +714,22 @@ async def evaluate_pair(
     macro_score, macro_conf = pair_macro_score(economic_events, pair, now)
     news_score, news_conf = pair_news_score(news_events, pair, now)
     cross_market_score, cross_market_conf = pair_cross_market_score(market_indicator_rows, pair)
-    session_score, session_conf = await pair_session_score(broker, pair, now, price.mid)
+    # Regional FX session scoring (London/NY/Tokyo/Sydney overlap) has no
+    # equivalent for a single-exchange equity market or a 24/7 crypto pair —
+    # "no opinion" for either, same convention every other component uses
+    # when it has nothing to say, rather than forcing FX-shaped session
+    # semantics onto instruments they don't apply to.
+    is_forex = asset_class_for(pair) == "forex"
+    if is_forex:
+        session_score, session_conf = await pair_session_score(broker, pair, now, price.mid)
+    else:
+        session_score, session_conf = 0.0, 0.0
     # Only fetched during New York's own opening transition window (the
     # specific handoff the "NY reversal" challenger is about) — an extra
     # broker call every cycle for every pair, for a signal that only ever
     # matters in a ~45min/day window, would be pure waste the rest of the day.
     london_range = None
-    if "New_York" in current_session_state(now).just_opened:
+    if is_forex and "New_York" in current_session_state(now).just_opened:
         london_range = await compute_prior_session_range(broker, pair, "London", now)
     calendar_covers_currency, upcoming_tier1_event = risk_governor.check_calendar_event_risk(
         economic_events, pair, now
@@ -766,87 +791,145 @@ async def evaluate_pair(
         )
 
 
+@dataclass
+class BrokerCycleContext:
+    """Everything that used to be fetched once per user per cycle
+    (evaluate_pair's own docstring explains why: identical for every pair
+    in one broker's slice of the instrument list, so re-fetching per pair
+    was pure waste) — now fetched once per BROKER KIND present in a user's
+    instrument list instead of once globally, since a user can now have
+    both OANDA and Alpaca instruments in the same cycle with separate
+    accounts, balances, and open positions."""
+    broker: Any
+    execution_service: ExecutionService
+    price_models: dict[tuple[str, str], object]
+    account_state: object
+    open_count: int
+    exposure: dict[str, float]
+    reconciliation_ok: bool
+    usd_rates: dict[str, float]
+
+
+async def _build_broker_cycle_context(
+    broker_kind: BrokerKind, settings: Settings, engine, user_id: int, mode: str, instruments: list[str],
+) -> BrokerCycleContext:
+    if broker_kind == "alpaca":
+        broker = AlpacaBroker(settings)
+        # Alpaca's own paper endpoint IS the real (non-simulated) account —
+        # there's no PaperBroker-equivalent wrapper for it (see
+        # src/broker/alpaca.py's module docstring), so its orders_fills rows
+        # are always tagged "demo" (a real, though not-real-money, broker
+        # account) regardless of this user's OANDA-side paper/demo choice.
+        exec_mode_for_broker = "demo"
+    elif mode == "paper":
+        broker = PaperBroker(settings, engine, user_id=user_id)
+        exec_mode_for_broker = "paper"
+    else:
+        broker = OandaBroker(settings)
+        exec_mode_for_broker = "demo" if mode == "demo" else "paper"
+
+    execution_service = ExecutionService(broker, engine, execution_mode=exec_mode_for_broker, user_id=user_id)
+    price_models = await build_price_models(broker, instruments)
+    # Cross-currency USD conversion only ever means anything for forex
+    # pairs (see _build_usd_conversion_rates' own "_" not in pair guard) —
+    # skipped entirely for Alpaca, not just a no-op call.
+    usd_rates = await _build_usd_conversion_rates(broker, instruments) if broker_kind == "oanda" else {}
+    account_state = await broker.account_state()
+    positions_raw = await broker.positions()
+    open_count, exposure = compute_exposure(positions_raw, broker_kind, exec_mode_for_broker, usd_rates)
+    reconciliation_ok = await execution_service.reconcile()
+    return BrokerCycleContext(
+        broker=broker, execution_service=execution_service, price_models=price_models,
+        account_state=account_state, open_count=open_count, exposure=exposure,
+        reconciliation_ok=reconciliation_ok, usd_rates=usd_rates,
+    )
+
+
 async def _run_once_for_user(
     user_ctx: UserTradingContext, engine, allow_unverified_event_risk: bool,
     economic_events: list[dict], news_events: list[dict], market_indicator_rows: list[dict],
     economic_surprises: list[dict], challengers: list[Challenger], meta_model,
 ) -> None:
-    """One full decision cycle for exactly one user's own OANDA account and
-    instrument list — the "one shared engine, per-user data" architecture:
-    same pipeline, same process, but every user trades independently
-    against their own credentials and gets their own trade_intents/
-    risk_decisions/orders_fills rows (see src/data/db.py's per-user table
-    scoping). Global tables (predictions, market data) are computed once
-    upstream and passed in, shared across every user watching the same
-    instrument, rather than recomputed per user."""
+    """One full decision cycle for exactly one user's own broker account(s)
+    and instrument list — the "one shared engine, per-user data"
+    architecture: same pipeline, same process, but every user trades
+    independently against their own credentials and gets their own
+    trade_intents/risk_decisions/orders_fills rows (see src/data/db.py's
+    per-user table scoping). Global tables (predictions, market data) are
+    computed once upstream and passed in, shared across every user watching
+    the same instrument, rather than recomputed per user.
+
+    A user's instrument list can span both OANDA (forex) and Alpaca
+    (equities/crypto) — each broker kind present gets its own
+    BrokerCycleContext (own account state, positions, exposure,
+    ExecutionService), built once and reused for every instrument routed to
+    that broker, mirroring the original single-broker optimization exactly,
+    just keyed by broker kind now instead of assumed singular."""
     settings = user_ctx.settings
     mode = user_ctx.execution_mode
     auto_execute = user_ctx.auto_execute
 
-    if mode == "paper":
-        broker = PaperBroker(settings, engine, user_id=user_ctx.user_id)
-    else:
-        broker = OandaBroker(settings)
+    instruments_by_broker: dict[BrokerKind, list[str]] = {}
+    for pair in user_ctx.instrument_list:
+        instruments_by_broker.setdefault(broker_kind_for(pair), []).append(pair)
 
-    execution_service = ExecutionService(
-        broker, engine, execution_mode="demo" if mode == "demo" else "paper", user_id=user_ctx.user_id,
-    )
+    if "alpaca" in instruments_by_broker and not settings.alpaca_api_key:
+        logger.warning(
+            "%s: %d Alpaca-routed instrument(s) skipped this cycle — no Alpaca credentials configured",
+            user_ctx.email, len(instruments_by_broker["alpaca"]),
+        )
+        del instruments_by_broker["alpaca"]
 
+    if allow_unverified_event_risk:
+        logger.warning(
+            "DEV FLAG: --allow-unverified-event-risk is set. The event gate "
+            "will NOT block trades even though no forward economic calendar "
+            "is connected. Never use this flag against a real account."
+        )
+    if auto_execute:
+        logger.warning(
+            "%s: auto_execute is set. Risk-approved trades will be sent "
+            "WITHOUT waiting for human authorization in the dashboard.",
+            user_ctx.email,
+        )
+
+    broker_contexts: dict[BrokerKind, BrokerCycleContext] = {}
     try:
-        price_models = await build_price_models(broker, user_ctx.instrument_list)
-
-        if allow_unverified_event_risk:
-            logger.warning(
-                "DEV FLAG: --allow-unverified-event-risk is set. The event gate "
-                "will NOT block trades even though no forward economic calendar "
-                "is connected. Never use this flag against a real account."
+        for broker_kind, instruments in instruments_by_broker.items():
+            broker_contexts[broker_kind] = await _build_broker_cycle_context(
+                broker_kind, settings, engine, user_ctx.user_id, mode, instruments,
             )
-        if auto_execute:
-            logger.warning(
-                "%s: auto_execute is set. Risk-approved trades will be sent "
-                "WITHOUT waiting for human authorization in the dashboard.",
-                user_ctx.email,
-            )
-
-        # Portfolio-wide state and cross-currency USD conversion rates:
-        # identical for every pair in this user's instrument list this
-        # cycle, so fetched once here rather than once per pair (see
-        # evaluate_pair's own docstring — real cost once instrument lists
-        # grow toward the full account universe, not just 5 pairs).
-        usd_rates = await _build_usd_conversion_rates(broker, user_ctx.instrument_list)
-        account_state = await broker.account_state()
-        positions_raw = await broker.positions()
-        open_count, exposure = compute_exposure(positions_raw, mode, usd_rates)
-        reconciliation_ok = await execution_service.reconcile()
 
         now = datetime.now(timezone.utc)
-        for pair in user_ctx.instrument_list:
-            await evaluate_pair(
-                broker=broker,
-                engine=engine,
-                user_id=user_ctx.user_id,
-                execution_service=execution_service,
-                execution_mode=mode,
-                price_models=price_models,
-                pair=pair,
-                economic_events=economic_events,
-                news_events=news_events,
-                market_indicator_rows=market_indicator_rows,
-                allow_unverified_event_risk=allow_unverified_event_risk,
-                auto_execute=auto_execute,
-                meta_model=meta_model,
-                now=now,
-                economic_surprises=economic_surprises,
-                challengers=challengers,
-                account_state=account_state,
-                positions_raw=positions_raw,
-                open_count=open_count,
-                exposure=exposure,
-                reconciliation_ok=reconciliation_ok,
-                usd_rates=usd_rates,
-            )
+        for broker_kind, instruments in instruments_by_broker.items():
+            ctx = broker_contexts[broker_kind]
+            for pair in instruments:
+                await evaluate_pair(
+                    broker=ctx.broker,
+                    engine=engine,
+                    user_id=user_ctx.user_id,
+                    execution_service=ctx.execution_service,
+                    execution_mode=mode,
+                    price_models=ctx.price_models,
+                    pair=pair,
+                    economic_events=economic_events,
+                    news_events=news_events,
+                    market_indicator_rows=market_indicator_rows,
+                    allow_unverified_event_risk=allow_unverified_event_risk,
+                    auto_execute=auto_execute,
+                    meta_model=meta_model,
+                    now=now,
+                    economic_surprises=economic_surprises,
+                    challengers=challengers,
+                    account_state=ctx.account_state,
+                    open_count=ctx.open_count,
+                    exposure=ctx.exposure,
+                    reconciliation_ok=ctx.reconciliation_ok,
+                    usd_rates=ctx.usd_rates,
+                )
     finally:
-        await broker.close()
+        for ctx in broker_contexts.values():
+            await ctx.broker.close()
 
 
 async def run_once(

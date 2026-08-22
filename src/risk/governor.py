@@ -209,7 +209,11 @@ class GateResult:
 class RiskDecision:
     approved: bool
     reason: str
-    size_units: int | None
+    # float for crypto (a whole BTC/ETH costs tens of thousands of dollars,
+    # so bounded-risk sizing genuinely needs fractional units); forex/
+    # equities still always size to a whole number, just represented the
+    # same way.
+    size_units: float | None
     gates: list[GateResult] = field(default_factory=list)
 
 
@@ -461,7 +465,11 @@ def evaluate(
         gate("sizing", False, str(exc))
         return RiskDecision(False, str(exc), None, gates)
 
-    size_units = int(risk_amount_usd / per_unit_usd_risk) if per_unit_usd_risk > 0 else 0
+    raw_size = risk_amount_usd / per_unit_usd_risk if per_unit_usd_risk > 0 else 0.0
+    # Crypto keeps genuine fractional sizing (see RiskDecision.size_units'
+    # docstring) — forex/equities truncate to a whole unit/share, which is
+    # how both actually trade in this system.
+    size_units = raw_size if "/" in instrument else int(raw_size)
     size_detail = (
         f"{size_units} units at {risk_pct:.2%} risk (${risk_amount_usd:.2f}) "
         f"[regime x{regime_multiplier:.2f}, confidence x{confidence_multiplier:.2f}, "

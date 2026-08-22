@@ -39,7 +39,7 @@ class ExecutionService:
         self,
         instrument: str,
         action: str,
-        size_units: int,
+        size_units: int | float,
         stop_loss_price: float | None,
         take_profit_price: float | None,
         client_order_id: str | None = None,

@@ -85,7 +85,7 @@ class BrokerAdapter(ABC):
     async def place_order(
         self,
         instrument: str,
-        units: int,
+        units: int | float,  # crypto sizes fractionally; forex/equities are always whole
         client_order_id: str,
         stop_loss_price: float | None = None,
         take_profit_price: float | None = None,

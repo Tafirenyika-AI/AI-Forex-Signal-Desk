@@ -263,7 +263,7 @@ class AlpacaBroker(BrokerAdapter):
     async def place_order(
         self,
         instrument: str,
-        units: int,
+        units: int | float,
         client_order_id: str,
         stop_loss_price: float | None = None,
         take_profit_price: float | None = None,

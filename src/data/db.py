@@ -286,7 +286,9 @@ risk_decisions = Table(
     Column("time", DateTime(timezone=True), nullable=False, index=True),
     Column("approved", Boolean, nullable=False),
     Column("reason", String, nullable=False),
-    Column("size_units", Integer, nullable=True),
+    # Float for the same reason as orders_fills.units above — crypto needs
+    # fractional sizing.
+    Column("size_units", Float, nullable=True),
     Column("gates_json", Text, nullable=True),
 )
 
@@ -301,7 +303,13 @@ orders_fills = Table(
     Column("broker_order_id", String, nullable=True),
     Column("broker_transaction_id", String, nullable=True),
     Column("instrument", String, nullable=False),
-    Column("units", Integer, nullable=False),
+    # Float, not Integer: crypto (Alpaca) sizes in fractional units — a
+    # whole BTC/ETH costs tens of thousands of dollars, so risk-bounded
+    # sizing genuinely needs fractional amounts. Forex/equity units are
+    # still always whole numbers in practice; Float represents those
+    # exactly too, so this is a strict widening, not a behavior change for
+    # existing OANDA rows.
+    Column("units", Float, nullable=False),
     Column("status", String, nullable=False),
     Column("fill_price", Float, nullable=True),
     Column("spread", Float, nullable=True),
