@@ -101,6 +101,25 @@ user_oanda_accounts = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
+# Mirrors user_oanda_accounts exactly, one broker later: encrypted_api_secret
+# is Fernet ciphertext (same key, same never-in-this-database posture).
+# api_key is stored plaintext like oanda_account_id — an identifier, not a
+# secret on its own; Alpaca requires both the key and the secret together
+# to authenticate. Optional per-user (no INNER JOIN dependency the way
+# user_oanda_accounts has) — a user with no row here just doesn't have
+# Alpaca-routed instruments evaluated, everything else still works.
+user_alpaca_accounts = Table(
+    "user_alpaca_accounts",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, nullable=False, unique=True, index=True),
+    Column("api_key", String, nullable=False),
+    Column("encrypted_api_secret", Text, nullable=False),
+    Column("base_url", String, nullable=False, default="https://paper-api.alpaca.markets/v2"),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
 user_preferences = Table(
     "user_preferences",
     metadata,

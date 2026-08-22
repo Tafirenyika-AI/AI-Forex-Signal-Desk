@@ -20,6 +20,7 @@ from src.config import Settings, settings_for_user
 from src.data.db import invitations as invitations_table
 from src.data.db import sessions as sessions_table
 from src.data.db import upsert_insert as insert
+from src.data.db import user_alpaca_accounts as user_alpaca_accounts_table
 from src.data.db import user_oanda_accounts as user_oanda_accounts_table
 from src.data.db import user_preferences as user_preferences_table
 from src.data.db import users as users_table
@@ -63,12 +64,20 @@ def active_trading_users(engine: Engine) -> list[UserTradingContext]:
                 user_oanda_accounts_table.c.encrypted_api_token,
                 user_oanda_accounts_table.c.oanda_account_id,
                 user_oanda_accounts_table.c.oanda_environment,
+                user_alpaca_accounts_table.c.api_key,
+                user_alpaca_accounts_table.c.encrypted_api_secret,
+                user_alpaca_accounts_table.c.base_url,
                 user_preferences_table.c.instrument_list_json,
                 user_preferences_table.c.execution_mode_default,
                 user_preferences_table.c.auto_execute,
             )
             .select_from(users_table)
             .join(user_oanda_accounts_table, user_oanda_accounts_table.c.user_id == users_table.c.id)
+            # Alpaca stays optional per-user (unlike OANDA's INNER JOIN
+            # above) — a user with no user_alpaca_accounts row still trades
+            # their OANDA instruments normally, they just have none routed
+            # to Alpaca.
+            .join(user_alpaca_accounts_table, user_alpaca_accounts_table.c.user_id == users_table.c.id, isouter=True)
             .join(user_preferences_table, user_preferences_table.c.user_id == users_table.c.id)
             .where(users_table.c.status == "active", user_preferences_table.c.onboarding_complete.is_(True))
         ).all()
@@ -77,10 +86,40 @@ def active_trading_users(engine: Engine) -> list[UserTradingContext]:
     for row in rows:
         try:
             token = decrypt_secret(row.encrypted_api_token)
-            settings = settings_for_user(token, row.oanda_environment, row.oanda_account_id)
         except Exception:  # noqa: BLE001 — one bad account must not take down every other user's cycle
-            logger.warning("Skipping user_id=%s (%s): could not build valid OANDA settings", row.id, row.email, exc_info=True)
+            logger.warning("Skipping user_id=%s (%s): could not decrypt OANDA credentials", row.id, row.email, exc_info=True)
             continue
+
+        alpaca_key = alpaca_secret = alpaca_base_url = None
+        if row.api_key and row.encrypted_api_secret:
+            try:
+                alpaca_key = row.api_key
+                alpaca_secret = decrypt_secret(row.encrypted_api_secret)
+                alpaca_base_url = row.base_url
+            except Exception:  # noqa: BLE001 — a bad Alpaca row skips only Alpaca, not this user's whole cycle
+                logger.warning("user_id=%s (%s): could not decrypt Alpaca credentials — "
+                                "Alpaca-routed instruments will be skipped this cycle", row.id, row.email, exc_info=True)
+                alpaca_key = alpaca_secret = alpaca_base_url = None
+
+        try:
+            settings = settings_for_user(
+                token, row.oanda_environment, row.oanda_account_id,
+                alpaca_key, alpaca_secret, alpaca_base_url,
+            )
+        except Exception:  # noqa: BLE001
+            if alpaca_key is None:
+                logger.warning("Skipping user_id=%s (%s): could not build valid OANDA settings", row.id, row.email, exc_info=True)
+                continue
+            # The failure might be Alpaca-specific (e.g. a corrupted
+            # base_url tripping _validate_alpaca_environment) — retry
+            # OANDA-only before giving up on this user entirely.
+            try:
+                settings = settings_for_user(token, row.oanda_environment, row.oanda_account_id)
+                logger.warning("user_id=%s (%s): Alpaca settings invalid — continuing OANDA-only this cycle",
+                                row.id, row.email, exc_info=True)
+            except Exception:  # noqa: BLE001
+                logger.warning("Skipping user_id=%s (%s): could not build valid OANDA settings", row.id, row.email, exc_info=True)
+                continue
         instrument_list = json.loads(row.instrument_list_json) if row.instrument_list_json else _FALLBACK_INSTRUMENTS
         contexts.append(UserTradingContext(
             user_id=row.id, email=row.email, username=row.username, settings=settings,
@@ -274,6 +313,40 @@ def save_oanda_credentials(engine: Engine, user_id: int, api_token: str, account
         conn.execute(stmt)
 
 
+def save_alpaca_credentials(
+    engine: Engine, user_id: int, api_key: str, api_secret: str,
+    base_url: str = "https://paper-api.alpaca.markets/v2",
+) -> None:
+    """Mirrors save_oanda_credentials(): validates via the same
+    _validate_alpaca_environment path (through settings_for_user, so a bad
+    base_url never reaches the database) before encrypting and storing."""
+    settings_for_user("placeholder", "practice", "placeholder", api_key, api_secret, base_url)
+    now = datetime.now(timezone.utc)
+    with engine.begin() as conn:
+        stmt = insert(user_alpaca_accounts_table).values(
+            user_id=user_id, api_key=api_key, encrypted_api_secret=encrypt_secret(api_secret),
+            base_url=base_url, created_at=now, updated_at=now,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["user_id"],
+            set_={
+                "api_key": api_key,
+                "encrypted_api_secret": encrypt_secret(api_secret),
+                "base_url": base_url,
+                "updated_at": now,
+            },
+        )
+        conn.execute(stmt)
+
+
+def has_alpaca_credentials(engine: Engine, user_id: int) -> bool:
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(user_alpaca_accounts_table.c.id).where(user_alpaca_accounts_table.c.user_id == user_id)
+        ).first()
+    return row is not None
+
+
 def save_preferences(
     engine: Engine, user_id: int, instrument_list: list[str] | None, execution_mode_default: str,
     auto_execute: bool, onboarding_complete: bool,
@@ -316,16 +389,29 @@ def has_oanda_credentials(engine: Engine, user_id: int) -> bool:
 
 
 def get_user_settings(engine: Engine, user_id: int) -> Settings | None:
-    """One user's own decrypted OANDA credentials as a Settings instance —
-    used by the dashboard so every broker call (prices, account state,
-    order placement) runs against whoever is actually logged in, not a
-    single global .env account. None if this user hasn't completed
-    onboarding yet (shouldn't happen past src/dashboard/auth_gate.py's
-    gate, but checked rather than assumed)."""
+    """One user's own decrypted OANDA (+ Alpaca, if configured) credentials
+    as a Settings instance — used by the dashboard so every broker call
+    (prices, account state, order placement) runs against whoever is
+    actually logged in, not a single global .env account. None if this
+    user hasn't completed onboarding yet (shouldn't happen past
+    src/dashboard/auth_gate.py's gate, but checked rather than assumed).
+    Alpaca fields stay None if this user hasn't configured it — it's
+    optional, unlike OANDA."""
     with engine.connect() as conn:
         row = conn.execute(
             select(user_oanda_accounts_table).where(user_oanda_accounts_table.c.user_id == user_id)
         ).mappings().first()
-    if row is None:
-        return None
-    return settings_for_user(decrypt_secret(row["encrypted_api_token"]), row["oanda_environment"], row["oanda_account_id"])
+        if row is None:
+            return None
+        alpaca_row = conn.execute(
+            select(user_alpaca_accounts_table).where(user_alpaca_accounts_table.c.user_id == user_id)
+        ).mappings().first()
+    alpaca_key = alpaca_secret = alpaca_base_url = None
+    if alpaca_row is not None:
+        alpaca_key = alpaca_row["api_key"]
+        alpaca_secret = decrypt_secret(alpaca_row["encrypted_api_secret"])
+        alpaca_base_url = alpaca_row["base_url"]
+    return settings_for_user(
+        decrypt_secret(row["encrypted_api_token"]), row["oanda_environment"], row["oanda_account_id"],
+        alpaca_key, alpaca_secret, alpaca_base_url,
+    )
