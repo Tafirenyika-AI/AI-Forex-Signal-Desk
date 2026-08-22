@@ -542,12 +542,20 @@ async def _do_authorize(mode: str, trade_intent_id: int, decision: str, notes: s
 
 
 def get_kill_switch_state() -> dict | None:
+    """Each broker (OANDA/Alpaca) now has its own risk_state row per day
+    (see the (user_id, day, broker) unique constraint) — surfaces ANY
+    active kill switch, since a human checking this sidebar needs to know
+    if trading is halted on EITHER broker, not just whichever row happened
+    to be fetched first."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     with engine.connect() as conn:
-        row = conn.execute(
+        rows = conn.execute(
             select(risk_state).where(risk_state.c.user_id == CURRENT_USER_ID, risk_state.c.day == today)
-        ).mappings().first()
-    return dict(row) if row else None
+        ).mappings().all()
+    if not rows:
+        return None
+    active = [dict(r) for r in rows if r["kill_switch_active"]]
+    return active[0] if active else dict(rows[0])
 
 
 def fetch_trade_outcomes(engine, user_id: int) -> list[dict]:
@@ -967,12 +975,18 @@ kill_state = get_kill_switch_state()
 if kill_state and kill_state["kill_switch_active"]:
     st.sidebar.error(f"🛑 KILL SWITCH ACTIVE\n\n{kill_state['kill_switch_reason']}")
     if st.sidebar.button("▶️ Resume trading", width="stretch"):
-        risk_governor.set_kill_switch(engine, CURRENT_USER_ID, False, None)
+        # Every broker, not just the one that happened to trip — a human
+        # resuming trading expects it fully resumed.
+        for _broker in ("oanda", "alpaca"):
+            risk_governor.set_kill_switch(engine, CURRENT_USER_ID, _broker, False, None)
         st.rerun()
 else:
     st.sidebar.success("✅ Trading enabled")
     if st.sidebar.button("🛑 EMERGENCY STOP", width="stretch", type="primary"):
-        risk_governor.set_kill_switch(engine, CURRENT_USER_ID, True, "manual emergency stop from dashboard")
+        # Every broker — an emergency stop that only halts OANDA while
+        # Alpaca keeps trading would not be an emergency stop.
+        for _broker in ("oanda", "alpaca"):
+            risk_governor.set_kill_switch(engine, CURRENT_USER_ID, _broker, True, "manual emergency stop from dashboard")
         st.rerun()
 
 st.sidebar.divider()

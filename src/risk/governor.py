@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
+from src.broker.registry import broker_kind_for
 from src.data.db import risk_state as risk_state_table
 from src.data.db import risk_state_weekly as risk_state_weekly_table
 from src.data.db import upsert_insert as insert
@@ -217,17 +218,21 @@ class RiskDecision:
     gates: list[GateResult] = field(default_factory=list)
 
 
-def _get_or_init_day_state(engine: Engine, user_id: int, balance: float, now: datetime) -> dict[str, Any]:
+def _get_or_init_day_state(engine: Engine, user_id: int, broker: str, balance: float, now: datetime) -> dict[str, Any]:
     day_key = now.strftime("%Y-%m-%d")
     with engine.begin() as conn:
         row = conn.execute(
-            select(risk_state_table).where(risk_state_table.c.user_id == user_id, risk_state_table.c.day == day_key)
+            select(risk_state_table).where(
+                risk_state_table.c.user_id == user_id, risk_state_table.c.day == day_key,
+                risk_state_table.c.broker == broker,
+            )
         ).mappings().first()
         if row:
             return dict(row)
         stmt = insert(risk_state_table).values(
             user_id=user_id,
             day=day_key,
+            broker=broker,
             day_start_balance=balance,
             kill_switch_active=False,
             kill_switch_reason=None,
@@ -242,27 +247,28 @@ def _get_or_init_day_state(engine: Engine, user_id: int, balance: float, now: da
         }
 
 
-def _get_or_init_week_state(engine: Engine, user_id: int, balance: float, now: datetime) -> dict[str, Any]:
+def _get_or_init_week_state(engine: Engine, user_id: int, broker: str, balance: float, now: datetime) -> dict[str, Any]:
     iso_year, iso_week, _ = now.isocalendar()
     week_key = f"{iso_year}-W{iso_week:02d}"
     with engine.begin() as conn:
         row = conn.execute(
             select(risk_state_weekly_table).where(
-                risk_state_weekly_table.c.user_id == user_id, risk_state_weekly_table.c.iso_week == week_key
+                risk_state_weekly_table.c.user_id == user_id, risk_state_weekly_table.c.iso_week == week_key,
+                risk_state_weekly_table.c.broker == broker,
             )
         ).mappings().first()
         if row:
             return dict(row)
         conn.execute(
             insert(risk_state_weekly_table).values(
-                user_id=user_id, iso_week=week_key, week_start_balance=balance, updated_at=now,
+                user_id=user_id, iso_week=week_key, broker=broker, week_start_balance=balance, updated_at=now,
             )
         )
         return {"iso_week": week_key, "week_start_balance": balance}
 
 
 def set_kill_switch(
-    engine: Engine, user_id: int, active: bool, reason: str | None, now: datetime | None = None
+    engine: Engine, user_id: int, broker: str, active: bool, reason: str | None, now: datetime | None = None
 ) -> None:
     now = now or datetime.now(timezone.utc)
     day_key = now.strftime("%Y-%m-%d")
@@ -270,13 +276,14 @@ def set_kill_switch(
         stmt = insert(risk_state_table).values(
             user_id=user_id,
             day=day_key,
+            broker=broker,
             day_start_balance=0.0,
             kill_switch_active=active,
             kill_switch_reason=reason,
             updated_at=now,
         )
         stmt = stmt.on_conflict_do_update(
-            index_elements=["user_id", "day"],
+            index_elements=["user_id", "day", "broker"],
             set_={
                 "kill_switch_active": active,
                 "kill_switch_reason": reason,
@@ -313,13 +320,17 @@ def evaluate(
 ) -> RiskDecision:
     now = now or datetime.now(timezone.utc)
     gates: list[GateResult] = []
+    # OANDA and Alpaca are separate real account balances — kill-switch/
+    # daily-loss state must be tracked independently per broker, not just
+    # per user, or one broker's bad day would trip (or mask) the other's.
+    broker = broker_kind_for(instrument)
 
     def gate(name: str, passed: bool, detail: str) -> bool:
         gates.append(GateResult(name, passed, detail))
         return passed
 
     # --- kill-switch gate (checked first; nothing below can override it) ---
-    day_state = _get_or_init_day_state(engine, user_id, account_balance, now)
+    day_state = _get_or_init_day_state(engine, user_id, broker, account_balance, now)
     daily_pl_pct = (account_nav - day_state["day_start_balance"]) / day_state["day_start_balance"] if day_state["day_start_balance"] else 0.0
 
     if day_state["kill_switch_active"]:
@@ -327,24 +338,24 @@ def evaluate(
         return RiskDecision(False, "kill switch active", None, gates)
 
     if not reconciliation_ok:
-        set_kill_switch(engine, user_id, True, "position reconciliation failed", now)
+        set_kill_switch(engine, user_id, broker, True, "position reconciliation failed", now)
         gate("kill_switch", False, "reconciliation failed — kill switch engaged")
         return RiskDecision(False, "reconciliation failed", None, gates)
 
     if daily_pl_pct <= -DAILY_LOSS_LIMIT_PCT:
-        set_kill_switch(engine, user_id, True, f"daily loss {daily_pl_pct:.2%} breached {-DAILY_LOSS_LIMIT_PCT:.2%}", now)
+        set_kill_switch(engine, user_id, broker, True, f"daily loss {daily_pl_pct:.2%} breached {-DAILY_LOSS_LIMIT_PCT:.2%}", now)
         gate("kill_switch", False, f"daily loss limit breached: {daily_pl_pct:.2%}")
         return RiskDecision(False, "daily loss limit breached", None, gates)
 
     # Weekly loss limit (spec sec. 17) — catches a slow bleed spread across
     # several down days that never individually breach the daily limit.
-    week_state = _get_or_init_week_state(engine, user_id, account_balance, now)
+    week_state = _get_or_init_week_state(engine, user_id, broker, account_balance, now)
     weekly_pl_pct = (
         (account_nav - week_state["week_start_balance"]) / week_state["week_start_balance"]
         if week_state["week_start_balance"] else 0.0
     )
     if weekly_pl_pct <= -WEEKLY_LOSS_LIMIT_PCT:
-        set_kill_switch(engine, user_id, True, f"weekly loss {weekly_pl_pct:.2%} breached {-WEEKLY_LOSS_LIMIT_PCT:.2%}", now)
+        set_kill_switch(engine, user_id, broker, True, f"weekly loss {weekly_pl_pct:.2%} breached {-WEEKLY_LOSS_LIMIT_PCT:.2%}", now)
         gate("kill_switch", False, f"weekly loss limit breached: {weekly_pl_pct:.2%}")
         return RiskDecision(False, "weekly loss limit breached", None, gates)
 

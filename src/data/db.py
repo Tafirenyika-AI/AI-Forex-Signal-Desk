@@ -135,6 +135,10 @@ user_preferences = Table(
 
 
 # --- market_prices: timestamped bid/ask/mid/spread by instrument (blueprint sec. 12) ---
+# broker ("oanda"/"alpaca"): nullable + defaulted to "oanda" rather than
+# NOT NULL, since existing rows predate the column and a live ALTER TABLE
+# can't retroactively know a value without a backfill (done once, live,
+# alongside adding the column — see the migration this shipped with).
 market_prices = Table(
     "market_prices",
     metadata,
@@ -144,6 +148,7 @@ market_prices = Table(
     Column("bid", Float, nullable=False),
     Column("ask", Float, nullable=False),
     Column("ingested_at", DateTime(timezone=True), nullable=False),
+    Column("broker", String, nullable=True, default="oanda"),
 )
 
 # --- candles: OHLC by instrument/granularity ---
@@ -160,7 +165,13 @@ candles = Table(
     Column("close", Float, nullable=False),
     Column("volume", Integer, nullable=False),
     Column("complete", Boolean, nullable=False),
-    UniqueConstraint("instrument", "granularity", "time", name="uq_candle"),
+    Column("broker", String, nullable=True, default="oanda"),
+    # Widened from (instrument, granularity, time) to include broker: two
+    # brokers could in principle quote the same symbol string identically
+    # (doesn't happen today — OANDA's EUR_USD vs Alpaca's AAPL/BTC-USD
+    # shapes never collide — but the constraint itself shouldn't silently
+    # rely on that never changing).
+    UniqueConstraint("broker", "instrument", "granularity", "time", name="uq_candle"),
 )
 
 # --- positions_snapshots: periodic broker-reconciled exposure/equity ---
@@ -274,6 +285,7 @@ trade_intents = Table(
     Column("status", String, nullable=False, default="PROPOSED"),
     Column("execution_mode", String, nullable=True),  # paper / demo; set once risk-approved
     Column("reference_price", Float, nullable=True),  # mid price when the signal was generated
+    Column("broker", String, nullable=True, default="oanda"),
 )
 
 # --- risk_decisions: approved/rejected plus reason and limits ---
@@ -316,6 +328,7 @@ orders_fills = Table(
     Column("latency_ms", Float, nullable=True),
     Column("execution_mode", String, nullable=False),  # paper / demo
     Column("raw_json", Text, nullable=True),
+    Column("broker", String, nullable=True, default="oanda"),
 )
 
 # --- model_registry: model version, training period, validation stats, deployment status ---
@@ -432,7 +445,11 @@ trade_outcomes = Table(
     Column("closed_at", DateTime(timezone=True), nullable=False),
     Column("outcome", String, nullable=False),  # WIN / LOSS / BREAKEVEN
     Column("synced_at", DateTime(timezone=True), nullable=False),
-    UniqueConstraint("broker_trade_id", "execution_mode", name="uq_trade_outcome"),
+    Column("broker", String, nullable=True, default="oanda"),
+    # Widened to include broker: broker_trade_id is only unique WITHIN one
+    # broker's own ID space — two different brokers could in principle
+    # issue the same trade ID under the same execution_mode value.
+    UniqueConstraint("broker", "broker_trade_id", "execution_mode", name="uq_trade_outcome"),
 )
 
 
@@ -450,7 +467,12 @@ risk_state = Table(
     Column("kill_switch_active", Boolean, nullable=False, default=False),
     Column("kill_switch_reason", String, nullable=True),
     Column("updated_at", DateTime(timezone=True), nullable=False),
-    UniqueConstraint("user_id", "day", name="uq_risk_state_user_day"),
+    # broker: kill-switch/daily-loss state is now per-broker, not just
+    # per-user — OANDA and Alpaca are separate real account balances, so
+    # one broker's bad day must not trip the other's kill switch (or use
+    # the wrong day_start_balance for its P/L math).
+    Column("broker", String, nullable=True, default="oanda"),
+    UniqueConstraint("user_id", "day", "broker", name="uq_risk_state_user_day"),
 )
 
 # --- risk_state_weekly: same shape as risk_state, one row per (user, ISO
@@ -463,7 +485,8 @@ risk_state_weekly = Table(
     Column("iso_week", String, nullable=False),  # e.g. "2026-W33"
     Column("week_start_balance", Float, nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
-    UniqueConstraint("user_id", "iso_week", name="uq_risk_state_weekly_user_week"),
+    Column("broker", String, nullable=True, default="oanda"),
+    UniqueConstraint("user_id", "iso_week", "broker", name="uq_risk_state_weekly_user_week"),
 )
 
 
