@@ -27,6 +27,11 @@ class Settings:
     db_path: Path
     fred_api_key: str | None
     alphavantage_api_key: str | None
+    # Alpaca is optional per-user (unlike OANDA) — None means this user
+    # hasn't configured it yet, not an error.
+    alpaca_api_key: str | None = None
+    alpaca_api_secret: str | None = None
+    alpaca_base_url: str | None = None
 
     @property
     def oanda_rest_host(self) -> str:
@@ -52,6 +57,21 @@ def _validate_environment(environment: str) -> None:
         )
 
 
+def _validate_alpaca_environment(base_url: str | None) -> None:
+    """Same safety rail as _validate_environment(), for Alpaca: hard-refuse
+    anything that isn't Alpaca's paper-trading host, so nothing can
+    accidentally point this system at real-money live trading — the same
+    "paper/demo only until extended live-paper evaluation" policy applies
+    to every broker here, not just OANDA."""
+    if base_url and not base_url.rstrip("/").startswith("https://paper-api.alpaca.markets"):
+        raise RuntimeError(
+            f"ALPACA_BASE_URL is set to {base_url!r}, not Alpaca's paper-trading host. "
+            "This system is paper/demo only until it has passed backtesting, "
+            "walk-forward testing and an extended live-paper evaluation. "
+            "Refusing to start against anything but https://paper-api.alpaca.markets."
+        )
+
+
 def load_settings() -> Settings:
     token = os.environ.get("OANDA_API_TOKEN", "").strip()
     if not token:
@@ -64,6 +84,11 @@ def load_settings() -> Settings:
     fred_key = os.environ.get("FRED_API_KEY", "").strip() or None
     av_key = os.environ.get("ALPHAVANTAGE_API_KEY", "").strip() or None
 
+    alpaca_key = os.environ.get("ALPACA_API_KEY", "").strip() or None
+    alpaca_secret = os.environ.get("ALPACA_API_SECRET", "").strip() or None
+    alpaca_base_url = os.environ.get("ALPACA_BASE_URL", "").strip() or None
+    _validate_alpaca_environment(alpaca_base_url)
+
     return Settings(
         oanda_api_token=token,
         oanda_environment=environment,
@@ -71,20 +96,30 @@ def load_settings() -> Settings:
         db_path=ROOT_DIR / "data" / "forex.db",
         fred_api_key=fred_key,
         alphavantage_api_key=av_key,
+        alpaca_api_key=alpaca_key,
+        alpaca_api_secret=alpaca_secret,
+        alpaca_base_url=alpaca_base_url,
     )
 
 
-def settings_for_user(oanda_api_token: str, oanda_environment: str, oanda_account_id: str) -> Settings:
+def settings_for_user(
+    oanda_api_token: str, oanda_environment: str, oanda_account_id: str,
+    alpaca_api_key: str | None = None, alpaca_api_secret: str | None = None,
+    alpaca_base_url: str | None = None,
+) -> Settings:
     """Builds a Settings instance from a specific user's stored (decrypted)
     OANDA credentials rather than the process-global .env — src/auth/
     decrypts a user_oanda_accounts row and calls this. Reuses
     _validate_environment() so per-user credentials are held to the exact
-    same live-trading refusal as the original single-user path."""
+    same live-trading refusal as the original single-user path. Alpaca
+    credentials are optional (default None) — unlike OANDA, not every user
+    has to have configured a second broker."""
     token = oanda_api_token.strip()
     if not token:
         raise RuntimeError("No OANDA API token configured for this user yet.")
     environment = oanda_environment.strip().lower()
     _validate_environment(environment)
+    _validate_alpaca_environment(alpaca_base_url)
     return Settings(
         oanda_api_token=token,
         oanda_environment=environment,
@@ -92,6 +127,9 @@ def settings_for_user(oanda_api_token: str, oanda_environment: str, oanda_accoun
         db_path=ROOT_DIR / "data" / "forex.db",
         fred_api_key=os.environ.get("FRED_API_KEY", "").strip() or None,
         alphavantage_api_key=os.environ.get("ALPHAVANTAGE_API_KEY", "").strip() or None,
+        alpaca_api_key=alpaca_api_key,
+        alpaca_api_secret=alpaca_api_secret,
+        alpaca_base_url=alpaca_base_url,
     )
 
 
