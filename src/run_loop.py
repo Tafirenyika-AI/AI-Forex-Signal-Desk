@@ -90,8 +90,10 @@ from src.models.trading_sessions import (
     PriorSessionRange,
     compute_prior_session_range,
     current_session_state,
+    cycle_cadence_ok,
+    is_forex_open,
+    is_nyse_open,
     pair_session_score,
-    should_run_cycle,
 )
 from src.risk import governor as risk_governor
 
@@ -868,9 +870,30 @@ async def _run_once_for_user(
     settings = user_ctx.settings
     mode = user_ctx.execution_mode
     auto_execute = user_ctx.auto_execute
+    now = datetime.now(timezone.utc)
+
+    # Per-instrument market-hours gate (replaces the old single global
+    # should_run_cycle() bail-out — see cycle_cadence_ok's docstring for
+    # why): each asset class has its own open/closed rule now, so a forex
+    # weekend closure no longer skips this user's crypto instruments too,
+    # and equities get their own NYSE-hours check instead of running (and
+    # burning real Alpaca API calls) at 3am ET when the market is shut.
+    skipped_closed = []
+    open_instruments = []
+    for pair in user_ctx.instrument_list:
+        asset_class = asset_class_for(pair)
+        if asset_class == "forex" and not is_forex_open(now):
+            skipped_closed.append(pair)
+        elif asset_class == "equity" and not is_nyse_open(now):
+            skipped_closed.append(pair)
+        else:  # crypto is always open; forex/equity already confirmed open above
+            open_instruments.append(pair)
+    if skipped_closed:
+        logger.info("%s: %d instrument(s) skipped this cycle — market closed: %s",
+                    user_ctx.email, len(skipped_closed), ", ".join(skipped_closed))
 
     instruments_by_broker: dict[BrokerKind, list[str]] = {}
-    for pair in user_ctx.instrument_list:
+    for pair in open_instruments:
         instruments_by_broker.setdefault(broker_kind_for(pair), []).append(pair)
 
     if "alpaca" in instruments_by_broker and not settings.alpaca_api_key:
@@ -900,7 +923,6 @@ async def _run_once_for_user(
                 broker_kind, settings, engine, user_ctx.user_id, mode, instruments,
             )
 
-        now = datetime.now(timezone.utc)
         for broker_kind, instruments in instruments_by_broker.items():
             ctx = broker_contexts[broker_kind]
             for pair in instruments:
@@ -1030,7 +1052,7 @@ def main() -> None:
         # path — the dashboard's manual "run cycle now" button calls
         # run_once() directly, bypassing main() entirely, so a human
         # explicitly asking for a scan is never throttled.
-        run_cycle, reason = should_run_cycle(datetime.now(timezone.utc))
+        run_cycle, reason = cycle_cadence_ok(datetime.now(timezone.utc))
         if not run_cycle:
             logger.info("Skipping this scheduled tick: %s", reason)
             return

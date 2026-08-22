@@ -21,7 +21,7 @@ the same way is simpler than special-casing which ones need it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 SESSION_TIMEZONES: dict[str, ZoneInfo] = {
@@ -29,6 +29,23 @@ SESSION_TIMEZONES: dict[str, ZoneInfo] = {
     "Tokyo": ZoneInfo("Asia/Tokyo"),
     "London": ZoneInfo("Europe/London"),
     "New_York": ZoneInfo("America/New_York"),
+}
+
+NYSE_TZ = ZoneInfo("America/New_York")
+NYSE_OPEN_LOCAL_TIME = time(9, 30)
+NYSE_CLOSE_LOCAL_TIME = time(16, 0)
+
+# NYSE's published full-market-closure holidays. No holiday-calendar
+# dependency exists in this project (deliberately kept minimal) — this
+# needs periodic manual maintenance for future years, same tradeoff this
+# module already makes elsewhere (see class docstring). Does NOT model the
+# ~4 early-close half-days/year NYSE also has — the only real-world effect
+# of that omission is trading a bit past the actual ~1pm close on those
+# specific days, never a false "open" on a day that's genuinely shut.
+NYSE_HOLIDAYS: set[date] = {
+    date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3),
+    date(2026, 5, 25), date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7),
+    date(2026, 11, 26), date(2026, 12, 25),
 }
 
 # Approximates each session to that market's real business day — the same
@@ -265,30 +282,63 @@ def ny_open_reversal_signal(london_range: PriorSessionRange | None) -> tuple[flo
     return -london_range.net_direction, _NY_REVERSAL_CONFIDENCE
 
 
-def should_run_cycle(now_utc: datetime) -> tuple[bool, str]:
+def is_forex_open(now_utc: datetime) -> bool:
+    """Negation of the weekend closure check above — the honest "is forex
+    tradeable right now" answer, exposed for per-instrument gating
+    (src/run_loop.py) now that a single cycle can also contain non-forex
+    instruments with their own, different open/closed rules."""
+    return not _is_market_closed(now_utc)
+
+
+def is_nyse_open(now_utc: datetime) -> bool:
+    """9:30am-4:00pm America/New_York, Monday-Friday, minus NYSE_HOLIDAYS
+    above — gates Alpaca equity instruments the way is_forex_open gates
+    OANDA forex ones. Crypto has no equivalent function at all: it's
+    tradeable 24/7, so nothing ever needs to ask."""
+    local = now_utc.astimezone(NYSE_TZ)
+    if local.weekday() >= 5:
+        return False
+    if local.date() in NYSE_HOLIDAYS:
+        return False
+    return NYSE_OPEN_LOCAL_TIME <= local.time() < NYSE_CLOSE_LOCAL_TIME
+
+
+def cycle_cadence_ok(now_utc: datetime) -> tuple[bool, str]:
     """(should_run, reason) for the *scheduled* decision-cycle entrypoint
     only (user-requested 2026-08-13: "scan more frequently / adapt
     cadence") — never applied to a manual dashboard-triggered run, which
     always runs immediately since a human just explicitly asked for it.
 
+    Renamed from should_run_cycle() and narrowed to a pure API-cost
+    throttle: it used to also hard-skip the entire tick when
+    state.market_closed (forex's weekend closure), which was correct back
+    when forex was the only asset class this system traded, but is wrong
+    now that a tick can also contain crypto (tradeable 24/7) or equities
+    (their own separate NYSE-hours rule, see is_nyse_open above) — "forex
+    is closed" is no longer ever a valid reason to skip a WHOLE tick for
+    EVERY instrument. Per-instrument open/closed filtering now happens in
+    src/run_loop.py instead, before any broker call for that instrument.
+
     The scheduled task's own trigger interval is the tightest cadence this
     can ever run at; this function decides, on each tick, whether that
-    tick should actually pay for a full cycle (68 instruments x 3 horizons
+    tick should actually pay for a full cycle (68+ instruments x 3 horizons
     of real broker calls). It's stateless — a fresh `python -m
     src.run_loop --once` process every tick has no memory of the last one
     — so throttling during quiet periods is done via clock alignment
     (`now_utc.minute % 4 < 2`) rather than a counter, and is deliberately
     conservative: any real ambiguity (overlap, a session just opening or
     about to close) always runs at full speed rather than risking a missed
-    transition."""
+    transition. Note state.market_closed collapses active/just_opened/
+    closing_soon to empty and overlap to False on a forex weekend, so this
+    naturally falls through to the plain quiet-period throttle rather than
+    ever hard-skipping — exactly the behavior crypto (always tradeable)
+    needs on a forex-closed weekend."""
     state = current_session_state(now_utc)
-    if state.market_closed:
-        return False, "market closed (weekend) — nothing to scan"
     if state.overlap:
         return True, "session overlap — highest-liquidity window, full speed"
     if state.just_opened or state.closing_soon:
         return True, "session transition window — full speed"
     return (
         now_utc.minute % 4 < 2,
-        "quiet single-session period — throttled cadence",
+        "quiet period — throttled cadence",
     )
