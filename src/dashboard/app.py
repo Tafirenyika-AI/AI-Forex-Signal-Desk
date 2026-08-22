@@ -444,6 +444,17 @@ def role_badge_html(is_admin: bool) -> str:
     return '<span class="af-role-badge">ADMIN</span>' if is_admin else '<span class="af-role-badge">MEMBER</span>'
 
 
+def _alpaca_configured() -> bool:
+    # getattr, not settings.alpaca_api_key directly: guards against a stale
+    # Streamlit Cloud process still holding an older Settings class from
+    # before this field existed (a real deploy-lag crash seen live
+    # 2026-08-22 — AttributeError on a freshly-pushed field). Once every
+    # deployed process has picked up the current code this is equivalent
+    # to a plain attribute access; it's a defensive fallback for the
+    # rollout window, not a sign the field is optional going forward.
+    return bool(getattr(settings, "alpaca_api_key", None))
+
+
 async def _fetch_prices(instruments: list[str]):
     forex = [i for i in instruments if asset_class_for(i) == "forex"]
     non_forex = [i for i in instruments if asset_class_for(i) != "forex"]
@@ -451,7 +462,7 @@ async def _fetch_prices(instruments: list[str]):
     if forex:
         async with OandaBroker(settings) as broker:
             prices += await broker.get_current_prices(forex)
-    if non_forex and settings.alpaca_api_key:
+    if non_forex and _alpaca_configured():
         async with AlpacaBroker(settings) as broker:
             prices += await broker.get_current_prices(non_forex)
     return prices
@@ -479,7 +490,7 @@ async def _fetch_candles(instrument: str, granularity: str, count: int):
     # cache key) — but Alpaca instruments were never reachable through
     # OandaBroker at all, mode-independent or not.
     if asset_class_for(instrument) != "forex":
-        if not settings.alpaca_api_key:
+        if not _alpaca_configured():
             return []
         async with AlpacaBroker(settings) as broker:
             return await broker.get_candles(instrument, granularity, count)
@@ -564,7 +575,7 @@ async def _do_authorize(mode: str, trade_intent_id: int, decision: str, notes: s
     instrument = row[0] if row else None
 
     if instrument is not None and broker_kind_for(instrument) == "alpaca":
-        if not settings.alpaca_api_key:
+        if not _alpaca_configured():
             raise RuntimeError("Alpaca is not configured for this account — cannot authorize this trade.")
         async with AlpacaBroker(settings) as broker:
             # Alpaca's own paper endpoint IS the real (non-simulated)
@@ -1899,7 +1910,7 @@ with tab_account:
         st.divider()
 
     st.subheader("📈 Alpaca account (equities + crypto, paper)")
-    if not settings.alpaca_api_key:
+    if not _alpaca_configured():
         st.caption("Alpaca isn't configured for this account yet.")
     else:
         try:
