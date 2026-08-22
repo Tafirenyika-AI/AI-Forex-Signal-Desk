@@ -101,8 +101,13 @@ async def sync_outcomes(engine: Engine, broker: OandaBroker, user_id: int, execu
                     closed_at=parse_oanda_time(txn["time"]),
                     outcome=_outcome_label(realized_pl),
                     synced_at=now,
+                    # This tracker only ever walks OANDA's transaction
+                    # ledger (see module docstring — Alpaca outcome
+                    # tracking is separate, deliberately deferred work),
+                    # so this is always correct, not a guess.
+                    broker="oanda",
                 )
-                stmt = stmt.on_conflict_do_nothing(index_elements=["broker_trade_id", "execution_mode"])
+                stmt = stmt.on_conflict_do_nothing(index_elements=["broker", "broker_trade_id", "execution_mode"])
                 result = conn.execute(stmt)
                 if result.rowcount:
                     new_count += 1

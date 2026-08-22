@@ -34,6 +34,7 @@ async def run_stream(broker: OandaBroker, engine) -> None:
                     "bid": price.bid,
                     "ask": price.ask,
                     "ingested_at": datetime.now(timezone.utc),
+                    "broker": "oanda",
                 },
             )
         count += 1

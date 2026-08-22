@@ -39,12 +39,13 @@ async def main() -> None:
                             "close": c.close,
                             "volume": c.volume,
                             "complete": c.complete,
+                            "broker": "oanda",  # this script only ever pulls from OandaBroker above
                         }
                         for c in candles
                     ]
                     stmt = insert(candles_table)
                     stmt = stmt.on_conflict_do_update(
-                        index_elements=["instrument", "granularity", "time"],
+                        index_elements=["broker", "instrument", "granularity", "time"],
                         set_={
                             "open": stmt.excluded.open,
                             "high": stmt.excluded.high,

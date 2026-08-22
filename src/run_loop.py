@@ -448,6 +448,7 @@ async def _evaluate_one_horizon(
                 explanation=decision.explanation,
                 status="PROPOSED",
                 reference_price=price.mid,
+                broker=broker_kind_for(pair),
             )
         )
         trade_intent_id = intent_result.inserted_primary_key[0]

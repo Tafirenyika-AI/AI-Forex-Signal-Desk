@@ -37,7 +37,9 @@ from sqlalchemy import Integer, func, select
 
 from src.auth import service as user_auth_service
 from src.authorization import service as auth_service
+from src.broker.alpaca import AlpacaBroker
 from src.broker.oanda import OandaBroker
+from src.broker.registry import asset_class_for, broker_kind_for
 from src.config import load_settings
 from src.dashboard.auth_gate import LOGO_PATH, current_user, logout, require_auth
 from src.dashboard.auth_gate import _logo_base64 as _brand_logo_base64
@@ -443,8 +445,16 @@ def role_badge_html(is_admin: bool) -> str:
 
 
 async def _fetch_prices(instruments: list[str]):
-    async with OandaBroker(settings) as broker:
-        return await broker.get_current_prices(instruments)
+    forex = [i for i in instruments if asset_class_for(i) == "forex"]
+    non_forex = [i for i in instruments if asset_class_for(i) != "forex"]
+    prices = []
+    if forex:
+        async with OandaBroker(settings) as broker:
+            prices += await broker.get_current_prices(forex)
+    if non_forex and settings.alpaca_api_key:
+        async with AlpacaBroker(settings) as broker:
+            prices += await broker.get_current_prices(non_forex)
+    return prices
 
 
 async def _fetch_account_state(mode: str):
@@ -461,12 +471,18 @@ def cached_prices(instruments: tuple[str, ...]):
 
 
 async def _fetch_candles(instrument: str, granularity: str, count: int):
-    # Always a fresh OandaBroker, independent of the sidebar's paper/demo
-    # scan_mode: PaperBroker.get_candles() just proxies to the same real
-    # OANDA-backed candle source anyway (src/execution/paper_broker.py), so
-    # candle/price data is genuinely global market state — identical
-    # regardless of whose account or which mode fetched it, same reasoning
-    # already applied to cached_prices above (no user_id in the cache key).
+    # Broker chosen by instrument, not by the sidebar's paper/demo scan_mode
+    # — PaperBroker.get_candles() just proxies to the same real OANDA-backed
+    # candle source anyway (src/execution/paper_broker.py), so forex candle
+    # data is genuinely global market state regardless of mode (same
+    # reasoning already applied to cached_prices above, no user_id in the
+    # cache key) — but Alpaca instruments were never reachable through
+    # OandaBroker at all, mode-independent or not.
+    if asset_class_for(instrument) != "forex":
+        if not settings.alpaca_api_key:
+            return []
+        async with AlpacaBroker(settings) as broker:
+            return await broker.get_candles(instrument, granularity, count)
     async with OandaBroker(settings) as broker:
         return await broker.get_candles(instrument, granularity, count)
 
@@ -526,6 +542,30 @@ def current_pl_pct(kill_state: dict | None, week_row, mode: str) -> tuple[float 
 
 
 async def _do_authorize(mode: str, trade_intent_id: int, decision: str, notes: str | None):
+    # Broker is resolved from the trade_intent's own instrument, not from
+    # the sidebar's mode selectbox — a single intent always belongs to
+    # exactly one broker regardless of the paper/demo/shadow mode the user
+    # currently has selected (a trader could switch modes between when a
+    # signal was proposed and when they get around to authorizing it).
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(trade_intents.c.instrument).where(trade_intents.c.id == trade_intent_id)
+        ).first()
+    instrument = row[0] if row else None
+
+    if instrument is not None and broker_kind_for(instrument) == "alpaca":
+        if not settings.alpaca_api_key:
+            raise RuntimeError("Alpaca is not configured for this account — cannot authorize this trade.")
+        async with AlpacaBroker(settings) as broker:
+            # Alpaca's own paper endpoint IS the real (non-simulated)
+            # account — always "demo", same as run_loop.py's broker
+            # construction (see src/broker/alpaca.py's module docstring).
+            service = ExecutionService(broker, engine, execution_mode="demo", user_id=CURRENT_USER_ID)
+            return await auth_service.authorize(
+                engine, broker, service, trade_intent_id, decision,
+                authorized_by="dashboard_user", notes=notes,
+            )
+
     if mode == "paper":
         async with PaperBroker(settings, engine, user_id=CURRENT_USER_ID) as broker:
             service = ExecutionService(broker, engine, execution_mode="paper", user_id=CURRENT_USER_ID)

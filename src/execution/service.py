@@ -18,6 +18,7 @@ from typing import Any, Literal
 from sqlalchemy.engine import Engine
 
 from src.broker.base import OrderResult
+from src.broker.registry import broker_kind_for
 from src.data.db import orders_fills as orders_fills_table
 from src.data.db import upsert_insert as insert
 
@@ -93,6 +94,7 @@ class ExecutionService:
                 latency_ms=latency_ms,
                 execution_mode=self._execution_mode,
                 raw_json=str(result.raw)[:4000],
+                broker=broker_kind_for(instrument),
             )
             stmt = stmt.on_conflict_do_nothing(index_elements=["client_order_id"])
             conn.execute(stmt)
