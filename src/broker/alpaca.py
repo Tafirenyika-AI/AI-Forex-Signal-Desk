@@ -68,7 +68,7 @@ class AlpacaApiError(RuntimeError):
         super().__init__(f"Alpaca API error {status_code}: {message}")
 
 
-def _parse_alpaca_time(value: str) -> datetime:
+def parse_alpaca_time(value: str) -> datetime:
     # Alpaca RFC3339 timestamps look like "2026-08-22T00:15:50.274641243Z" —
     # same nanosecond-precision issue OANDA's parser handles, same fix.
     value = value.replace("Z", "+00:00")
@@ -188,7 +188,7 @@ class AlpacaBroker(BrokerAdapter):
             for sym, q in data.get("quotes", {}).items():
                 if not q.get("bp") or not q.get("ap"):
                     continue
-                prices.append(Price(instrument=sym, time=_parse_alpaca_time(q["t"]), bid=float(q["bp"]), ask=float(q["ap"])))
+                prices.append(Price(instrument=sym, time=parse_alpaca_time(q["t"]), bid=float(q["bp"]), ask=float(q["ap"])))
 
         if crypto_syms:
             data = await self._request(
@@ -196,7 +196,7 @@ class AlpacaBroker(BrokerAdapter):
                 params={"symbols": ",".join(crypto_syms)},
             )
             for sym, q in data.get("quotes", {}).items():
-                prices.append(Price(instrument=sym, time=_parse_alpaca_time(q["t"]), bid=float(q["bp"]), ask=float(q["ap"])))
+                prices.append(Price(instrument=sym, time=parse_alpaca_time(q["t"]), bid=float(q["bp"]), ask=float(q["ap"])))
 
         return prices
 
@@ -251,7 +251,7 @@ class AlpacaBroker(BrokerAdapter):
 
         candles = []
         for b in raw_bars:
-            bar_time = _parse_alpaca_time(b["t"])
+            bar_time = parse_alpaca_time(b["t"])
             complete = (bar_time + timedelta(minutes=granularity_minutes)) <= now
             candles.append(Candle(
                 instrument=instrument, granularity=granularity, time=bar_time,
@@ -375,6 +375,15 @@ class AlpacaBroker(BrokerAdapter):
     async def cancel_order(self, broker_order_id: str) -> None:
         await self._request(self._trading_client, "DELETE", f"/orders/{broker_order_id}")
 
+    async def get_order(self, broker_order_id: str) -> dict[str, Any]:
+        """Single-order fetch — unlike transactions()'s bulk closed-orders
+        list, this one nests a bracket order's take-profit/stop-loss legs
+        with their own live status (real gap found live 2026-08-22: the
+        bulk list flattens legs into separate top-level entries instead,
+        so it can't answer "did this specific bracket's exit fill yet").
+        Used by src/outcomes/alpaca_tracker.py."""
+        return await self._request(self._trading_client, "GET", f"/orders/{broker_order_id}")
+
     async def positions(self) -> list[dict[str, Any]]:
         data = await self._request(self._trading_client, "GET", "/positions")
         for p in data:
@@ -384,11 +393,12 @@ class AlpacaBroker(BrokerAdapter):
 
     async def transactions(self, since_id: str | None = None) -> list[dict[str, Any]]:
         """Alpaca has no OANDA-style transaction ledger — closed/filled
-        orders are the closest equivalent. NOT yet wired into src/outcomes/
-        tracker.py's OANDA-shaped reconciliation (tradesClosed[]/ORDER_FILL
-        parsing is genuinely OANDA-specific) — that's separate, deliberately
-        deferred follow-up work, not something this method can paper over
-        by pretending to match OANDA's shape."""
+        orders are the closest equivalent. Bracket legs come back as
+        separate flattened top-level entries here, not nested under their
+        parent (see get_order()'s docstring) — src/outcomes/
+        alpaca_tracker.py uses this only to find a crypto stop-loss order
+        by client_order_id, and get_order() for everything that needs a
+        specific order's real state."""
         params: dict[str, Any] = {"status": "closed", "direction": "desc", "limit": 500}
         if since_id:
             params["after"] = since_id

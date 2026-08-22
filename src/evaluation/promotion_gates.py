@@ -68,11 +68,16 @@ class PromotionGateReport:
 
 
 def _real_trade_outcomes(engine: Engine, user_id: int) -> list[dict]:
+    # This module is explicitly the OANDA demo evaluation/promotion report
+    # (see module docstring) — filtered to match, now that Alpaca trades
+    # are tracked too (src/outcomes/alpaca_tracker.py) and would otherwise
+    # get silently pooled into a report about OANDA's own phase readiness.
     with engine.connect() as conn:
         rows = conn.execute(
             select(trade_outcomes_table).where(
                 trade_outcomes_table.c.trade_intent_id.is_not(None),
                 trade_outcomes_table.c.user_id == user_id,
+                trade_outcomes_table.c.broker == "oanda",
             )
         ).mappings().all()
     return [dict(r) for r in rows]

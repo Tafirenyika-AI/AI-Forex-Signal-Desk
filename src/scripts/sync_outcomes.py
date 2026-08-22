@@ -14,10 +14,12 @@ import asyncio
 from sqlalchemy import func, select
 
 from src.auth.service import active_trading_users
+from src.broker.alpaca import AlpacaBroker
 from src.broker.oanda import OandaBroker
 from src.config import load_settings
 from src.data.db import get_engine
 from src.data.db import trade_outcomes as trade_outcomes_table
+from src.outcomes.alpaca_tracker import sync_alpaca_outcomes
 from src.outcomes.tracker import sync_outcomes
 
 
@@ -26,11 +28,20 @@ async def main() -> None:
     engine = get_engine(settings.db_path)
 
     for user_ctx in active_trading_users(engine):
-        if user_ctx.execution_mode != "demo":
-            continue  # PaperBroker maintains no transaction ledger (see tracker.py docstring) — nothing to sync
-        async with OandaBroker(user_ctx.settings) as broker:
-            new_count = await sync_outcomes(engine, broker, user_ctx.user_id, execution_mode="demo")
-        print(f"{user_ctx.email}: {new_count} new closed trade(s) recorded this sync")
+        if user_ctx.execution_mode == "demo":
+            async with OandaBroker(user_ctx.settings) as broker:
+                new_count = await sync_outcomes(engine, broker, user_ctx.user_id, execution_mode="demo")
+            print(f"{user_ctx.email}: {new_count} new closed OANDA trade(s) recorded this sync")
+        # PaperBroker maintains no transaction ledger (see tracker.py docstring) — nothing to sync there
+
+        # Alpaca's own paper account is always the real (non-simulated) one
+        # regardless of this user's OANDA-side paper/demo mode — see
+        # src/broker/alpaca.py's module docstring — so it's synced
+        # independently of the execution_mode check above.
+        if user_ctx.settings.alpaca_api_key:
+            async with AlpacaBroker(user_ctx.settings) as broker:
+                new_count = await sync_alpaca_outcomes(engine, broker, user_ctx.user_id, execution_mode="demo")
+            print(f"{user_ctx.email}: {new_count} new closed Alpaca trade(s) recorded this sync")
 
     with engine.connect() as conn:
         total = conn.execute(select(func.count()).select_from(trade_outcomes_table)).scalar()

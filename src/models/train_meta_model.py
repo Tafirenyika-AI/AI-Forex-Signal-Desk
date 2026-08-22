@@ -61,6 +61,16 @@ def _load_linked_features(engine: Engine) -> pd.DataFrame:
             .select_from(trade_outcomes_table)
             .join(trade_intents_table, trade_intents_table.c.id == trade_outcomes_table.c.trade_intent_id)
             .where(trade_outcomes_table.c.outcome.in_(["WIN", "LOSS"]))
+            # OANDA only: macro/news/cross_market/session components are all
+            # trivially (0.0, 0.0) for non-forex instruments (see Phase 1's
+            # guards in src/risk/governor.py and the src/models/*_model.py
+            # score functions) — mixing in Alpaca outcomes now that they're
+            # tracked (src/outcomes/alpaca_tracker.py) would train this
+            # shared meta-model on two structurally different feature
+            # distributions without it knowing that's what's happening.
+            # Revisit once Alpaca has its own real signal richness or
+            # enough volume to justify a separate model.
+            .where(trade_outcomes_table.c.broker == "oanda")
         ).mappings().all()
 
         records = []

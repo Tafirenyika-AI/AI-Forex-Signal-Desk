@@ -429,7 +429,13 @@ trade_outcomes = Table(
     Column("execution_mode", String, nullable=False),  # paper / demo
     Column("instrument", String, nullable=False),
     Column("action", String, nullable=False),  # BUY / SELL
-    Column("units", Integer, nullable=False),
+    # Float, not Integer: crypto (Alpaca) closes in fractional units — real
+    # bug found live 2026-08-22, a genuine 0.00029925 BTC close silently
+    # truncated to 0 in this column while orders_fills.units/risk_decisions.
+    # size_units had already been widened for the same reason (Phase 6 of
+    # the Alpaca integration missed this one since Alpaca outcome tracking
+    # didn't exist yet at that point).
+    Column("units", Float, nullable=False),
     # nullable: real production gap found live 2026-08-18 — OANDA's
     # transaction ledger doesn't always retain the ORDER_FILL that opened a
     # trade long enough for src/outcomes/tracker.py's sync to find it
