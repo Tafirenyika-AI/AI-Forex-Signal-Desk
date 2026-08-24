@@ -2,11 +2,19 @@
 
 This module is deliberately independent of the prediction/decision code in
 src/decision — it never imports it, and it is the only thing allowed to
-turn a TradeDecision into an approved, sized order. Per sec. 8: "The
-prediction model is never permitted to increase its own risk limit because
-it 'feels confident.'" Every gate here can only make a trade smaller or
-reject it outright; none of them can increase size or override another
-gate's rejection.
+turn a TradeDecision into an approved, sized order. Every gate here can
+only make a trade smaller or reject it outright — never override another
+gate's rejection. Sizing is the one deliberate exception, and it's scoped
+narrowly: user-requested 2026-08-24 ("increase lot size for high-
+confidence trades") after the original sec. 8 default (0.25% baseline,
+1% ceiling) proved too conservative to show meaningful growth — confidence
+ALONE may now scale a trade's size above the RISK_PER_TRADE_PCT baseline,
+up to RISK_PER_TRADE_CEILING_PCT, in exchange for real evidence (MIN_
+CONFIDENCE cleared) that the decision layer itself is confident. Regime and
+per-instrument track record still only ever dampen, never amplify — a bad
+regime or an unproven/poor-performing instrument should never get a bigger
+position just because this one signal happened to be confident. See the
+sizing gate below for the exact mechanics.
 """
 from __future__ import annotations
 
@@ -24,8 +32,15 @@ from src.data.db import upsert_insert as insert
 from src.models.track_record import instrument_reliability_multiplier
 
 # --- sec. 8 controls (defaults) ---
-RISK_PER_TRADE_PCT = 0.0025  # 0.25% of equity, per sec. 8 default
-RISK_PER_TRADE_CEILING_PCT = 0.01  # absolute ceiling, sec. 8
+# Raised from the original 0.25%/1% sec. 8 defaults 2026-08-24, user's
+# explicit choice after being shown the dollar-figure tradeoff (real data
+# at the time: 22 closed trades over 7 days, $61 total P&L on a ~$10k
+# account — deemed too slow). RISK_PER_TRADE_PCT is now the BASELINE a
+# trade sizes at with average confidence; RISK_PER_TRADE_CEILING_PCT is
+# the hard cap the confidence multiplier below can scale a trade up to
+# for a maximally confident signal — see the sizing gate.
+RISK_PER_TRADE_PCT = 0.01  # 1% of equity baseline
+RISK_PER_TRADE_CEILING_PCT = 0.03  # up to 3% for a maximally confident signal
 DAILY_LOSS_LIMIT_PCT = 0.015  # 1.5%, sec. 8 "example research setting"
 MAX_CONCURRENT_POSITIONS = 3
 MAX_CORRELATED_EXPOSURE_PCT = 0.05  # cap aggregate same-USD-direction notional / NAV
@@ -69,10 +84,12 @@ REGIME_SIZE_MULTIPLIERS: dict[str, float] = {
     "SHOCK": 0.25,
 }
 
-# Confidence-scaled sizing floor (spec sec. 16) — see the sizing gate for
-# the full derivation. Never below 50% of the baseline risk, so a trade
-# that only just cleared MIN_CONFIDENCE still gets a meaningful size, not
-# a token one.
+# Confidence-scaled sizing range (spec sec. 16) — see the sizing gate for
+# the full derivation. A trade right at MIN_CONFIDENCE still gets at least
+# 50% of baseline risk (a token size would defeat the point of clearing
+# the gate at all); a maximally confident one now scales up to
+# RISK_PER_TRADE_CEILING_PCT / RISK_PER_TRADE_PCT x baseline (3x as of
+# 2026-08-24's user-requested change) instead of capping at 1x.
 CONFIDENCE_SIZE_FLOOR = 0.5
 
 # Weekly loss limit (spec sec. 17): daily limits alone can't catch a slow
@@ -448,28 +465,39 @@ def evaluate(
         gate("sizing", False, "no valid stop distance — cannot size a bounded-risk position")
         return RiskDecision(False, "missing stop distance", None, gates)
 
-    risk_pct = min(RISK_PER_TRADE_PCT, RISK_PER_TRADE_CEILING_PCT)
+    risk_pct = RISK_PER_TRADE_PCT  # baseline; confidence_multiplier below can scale this up to the ceiling
     regime_multiplier = REGIME_SIZE_MULTIPLIERS.get(regime or "", 1.0)
-    # Spec sec. 16: "use confidence to control... how much it risks." This
-    # module's own docstring is explicit that nothing here may ever
-    # INCREASE size — confidence_multiplier is deliberately bounded to
-    # [CONFIDENCE_SIZE_FLOOR, 1.0], scaled from the confidence gate's own
-    # MIN_CONFIDENCE floor (a trade right at the confidence gate's minimum
-    # gets the smallest size that still clears it; a maximally confident
-    # one gets the full baseline risk_pct, never more).
+    # Spec sec. 16: "use confidence to control... how much it risks." User-
+    # requested 2026-08-24: confidence now scales size ABOVE baseline too,
+    # not just below it — a trade right at the confidence gate's minimum
+    # still gets CONFIDENCE_SIZE_FLOOR (50%) of baseline, but a maximally
+    # confident one now scales up to the full ceiling-to-baseline ratio
+    # (3x baseline at today's 1%/3% settings) instead of capping at 1x.
+    # Regime and track-record below are UNCHANGED — still dampen-only —
+    # so a confident signal in a bad regime or on a poor-track-record
+    # instrument doesn't get amplified just because this one signal is
+    # confident; only the max-confidence, max-track-record, normal-regime
+    # case actually reaches the ceiling.
     confidence_span = max(1e-9, 1.0 - MIN_CONFIDENCE)
-    confidence_multiplier = CONFIDENCE_SIZE_FLOOR + (1.0 - CONFIDENCE_SIZE_FLOOR) * min(
+    confidence_ceiling_multiplier = RISK_PER_TRADE_CEILING_PCT / RISK_PER_TRADE_PCT
+    confidence_multiplier = CONFIDENCE_SIZE_FLOOR + (confidence_ceiling_multiplier - CONFIDENCE_SIZE_FLOOR) * min(
         1.0, max(0.0, (confidence - MIN_CONFIDENCE) / confidence_span)
     )
     # User-requested 2026-08-14 ("maximize profit on instruments which are
-    # profitable"): a real, self-relative per-instrument track record,
-    # same never-boost-only-dampen invariant as regime/confidence above —
-    # see src/models/track_record.py's docstring for the full derivation
-    # and the real one-directional-trend trap (USD_TRY, 100% hit rate but
-    # 306/306 BUY-only) its two-sided-evidence guard exists to catch.
+    # profitable"): a real, self-relative per-instrument track record —
+    # still dampen-only, see src/models/track_record.py's docstring for
+    # the full derivation and the real one-directional-trend trap
+    # (USD_TRY, 100% hit rate but 306/306 BUY-only) its two-sided-evidence
+    # guard exists to catch.
     track_record_multiplier, track_record_detail = instrument_reliability_multiplier(engine, user_id, instrument)
     size_multiplier = regime_multiplier * confidence_multiplier * track_record_multiplier
     risk_amount_usd = account_balance * risk_pct * size_multiplier
+    # Defense in depth: regime/track_record are each <=1.0 and confidence
+    # is bounded to confidence_ceiling_multiplier by construction above, so
+    # this can't mathematically exceed RISK_PER_TRADE_CEILING_PCT anyway —
+    # clamped explicitly regardless, since this is the one gate allowed to
+    # increase size and a silent math error here would size a real order.
+    risk_amount_usd = min(risk_amount_usd, account_balance * RISK_PER_TRADE_CEILING_PCT)
     try:
         per_unit_usd_risk = stop_distance * usd_value_per_unit(instrument, current_price, usd_rates)
     except ValueError as exc:
@@ -481,9 +509,10 @@ def evaluate(
     # docstring) — forex/equities truncate to a whole unit/share, which is
     # how both actually trade in this system.
     size_units = raw_size if "/" in instrument else int(raw_size)
+    effective_risk_pct = (risk_amount_usd / account_balance) if account_balance else 0.0
     size_detail = (
-        f"{size_units} units at {risk_pct:.2%} risk (${risk_amount_usd:.2f}) "
-        f"[regime x{regime_multiplier:.2f}, confidence x{confidence_multiplier:.2f}, "
+        f"{size_units} units at {effective_risk_pct:.2%} risk (${risk_amount_usd:.2f}) "
+        f"[baseline {risk_pct:.2%}, regime x{regime_multiplier:.2f}, confidence x{confidence_multiplier:.2f}, "
         f"track_record x{track_record_multiplier:.2f} ({track_record_detail})]"
     )
     if not gate("sizing", size_units > 0, size_detail):

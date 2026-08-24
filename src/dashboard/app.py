@@ -1131,7 +1131,21 @@ else:
         st.rerun()
 
 st.sidebar.divider()
+_class_counts: dict[str, int] = {}
+for _inst in _all_instruments:
+    _class_counts[asset_class_for(_inst)] = _class_counts.get(asset_class_for(_inst), 0) + 1
+_markets_summary = " · ".join(
+    f"{_class_counts[c]} {ASSET_CLASS_LABELS.get(c, c.upper()).split(' · ')[0].title()}"
+    for c in ("forex", "equity", "crypto") if _class_counts.get(c)
+)
+st.sidebar.caption(f"📡 Watching: {_markets_summary}" + ("" if _alpaca_configured() else " (Alpaca not configured)"))
+
 st.sidebar.subheader("Scan markets now")
+st.sidebar.caption(
+    "Mode applies to every market above in one pass — OANDA (forex) and Alpaca "
+    "(equities/crypto), same as the automated schedule. Alpaca's own paper account "
+    "always stands in for \"demo\" — it has no separate simulated-fills mode."
+)
 scan_mode = st.sidebar.selectbox("Mode", ["paper", "demo", "shadow"], key="scan_mode")
 if st.sidebar.button("🔄 Run a decision cycle", width="stretch"):
     with st.spinner("Running one cycle for your account..."):
@@ -2066,7 +2080,11 @@ with tab_risk:
         {"Control": "Price-drift / slippage guard", "Value": f"reject if price moved > {risk_governor.PRICE_DRIFT_STOP_RATIO:.0%} of stop distance since signal"},
         {"Control": "Stale-data guard", "Value": ", ".join(f"{k}: {v:.0f}s" for k, v in risk_governor.FRESHNESS_THRESHOLDS_SECONDS.items())},
         {"Control": "Regime size multipliers", "Value": ", ".join(f"{k}: x{v}" for k, v in risk_governor.REGIME_SIZE_MULTIPLIERS.items()) or "none active outside HIGH_VOLATILITY/SHOCK"},
-        {"Control": "Confidence size floor", "Value": f"{risk_governor.CONFIDENCE_SIZE_FLOOR:.0%} of baseline at min confidence, up to 100% at full confidence — never above baseline"},
+        {"Control": "Confidence-scaled sizing", "Value": (
+            f"{risk_governor.CONFIDENCE_SIZE_FLOOR:.0%} of baseline at min confidence, up to "
+            f"{risk_governor.RISK_PER_TRADE_CEILING_PCT / risk_governor.RISK_PER_TRADE_PCT:.0%} "
+            "at full confidence — regime and track record still only ever dampen this, never boost it"
+        )},
     ]
     section_card(lambda: st.dataframe(pd.DataFrame(limits_rows), width="stretch", hide_index=True))
 
