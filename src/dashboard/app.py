@@ -1146,7 +1146,15 @@ st.sidebar.caption(
     "(equities/crypto), same as the automated schedule. Alpaca's own paper account "
     "always stands in for \"demo\" — it has no separate simulated-fills mode."
 )
-scan_mode = st.sidebar.selectbox("Mode", ["paper", "demo", "shadow"], key="scan_mode")
+_mode_options = ["paper", "demo", "shadow"]
+# Real confusion found live 2026-08-24: without an explicit index this
+# defaulted to "paper" (the first list item) every time the dashboard
+# loaded, regardless of the account's actual saved execution_mode_default
+# ("demo" for real accounts) — a manual scan could silently run simulated
+# instead of real. Default to the user's own saved preference instead.
+_saved_mode = _prefs.get("execution_mode_default") if _prefs else None
+_default_mode_index = _mode_options.index(_saved_mode) if _saved_mode in _mode_options else _mode_options.index("demo")
+scan_mode = st.sidebar.selectbox("Mode", _mode_options, index=_default_mode_index, key="scan_mode")
 if st.sidebar.button("🔄 Run a decision cycle", width="stretch"):
     with st.spinner("Running one cycle for your account..."):
         run_async(run_once(scan_mode, allow_unverified_event_risk=False, only_user_id=CURRENT_USER_ID))
