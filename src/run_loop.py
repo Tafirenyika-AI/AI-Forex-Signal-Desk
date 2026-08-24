@@ -148,7 +148,17 @@ MODEL_RETRAIN_INTERVAL = timedelta(hours=1)
 
 
 def _model_cache_path(pair: str, horizon_label: str) -> Path:
-    return MODEL_CACHE_DIR / f"{pair}_{horizon_label}.pkl"
+    # Real production bug found live 2026-08-24: crypto pairs contain "/"
+    # (BTC/USD), which a naive f-string turns into a path separator —
+    # "BTC/USD_15m.pkl" resolves to a nonexistent "BTC" subdirectory, and
+    # _save_cached_model's plain open(...) doesn't create parent dirs. This
+    # silently crashed the ENTIRE decision cycle (every instrument, every
+    # broker, not just the crypto pair) for ~46 hours once BTC/USD had
+    # enough candle history to reach its first real training attempt —
+    # the exception propagates out of _build_broker_cycle_context before
+    # the per-pair evaluation loop that writes trade_intents ever runs.
+    safe_pair = pair.replace("/", "-")
+    return MODEL_CACHE_DIR / f"{safe_pair}_{horizon_label}.pkl"
 
 
 def _load_cached_model(pair: str, horizon_label: str) -> object | None:
