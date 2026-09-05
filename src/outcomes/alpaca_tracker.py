@@ -160,7 +160,9 @@ async def sync_alpaca_outcomes(engine: Engine, broker: AlpacaBroker, user_id: in
                 synced_at=now,
                 broker="alpaca",
             )
-            stmt = stmt.on_conflict_do_nothing(index_elements=["broker", "broker_trade_id", "execution_mode"])
+            stmt = stmt.on_conflict_do_nothing(
+                index_elements=["broker", "broker_trade_id", "execution_mode", "closed_at"]
+            )
             result = conn.execute(stmt)
             if result.rowcount:
                 new_count += 1

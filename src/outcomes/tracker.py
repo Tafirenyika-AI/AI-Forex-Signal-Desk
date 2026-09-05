@@ -24,6 +24,15 @@ this walks instead.
 Only demo (real OANDA account) trades are covered — PaperBroker doesn't
 maintain a transaction ledger in v1 (see its docstring), so paper outcomes
 aren't tracked here yet.
+
+Note (2026-09-05): `trade_outcomes`' unique constraint now includes
+`closed_at`, so a genuine OANDA partial close followed by a later final
+close on the same tradeID both get recorded as separate rows instead of
+the second one colliding and silently dropping. This means one real trade
+can now legitimately produce more than one `trade_outcomes` row — anything
+assuming "one row = one round trip" (e.g. the meta-model's linked-outcome
+count in train_meta_model.py) should be revisited if partial closes turn
+out to be common in practice.
 """
 from __future__ import annotations
 
@@ -107,7 +116,9 @@ async def sync_outcomes(engine: Engine, broker: OandaBroker, user_id: int, execu
                     # so this is always correct, not a guess.
                     broker="oanda",
                 )
-                stmt = stmt.on_conflict_do_nothing(index_elements=["broker", "broker_trade_id", "execution_mode"])
+                stmt = stmt.on_conflict_do_nothing(
+                    index_elements=["broker", "broker_trade_id", "execution_mode", "closed_at"]
+                )
                 result = conn.execute(stmt)
                 if result.rowcount:
                     new_count += 1

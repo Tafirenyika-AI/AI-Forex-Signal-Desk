@@ -452,10 +452,17 @@ trade_outcomes = Table(
     Column("outcome", String, nullable=False),  # WIN / LOSS / BREAKEVEN
     Column("synced_at", DateTime(timezone=True), nullable=False),
     Column("broker", String, nullable=True, default="oanda"),
-    # Widened to include broker: broker_trade_id is only unique WITHIN one
-    # broker's own ID space — two different brokers could in principle
-    # issue the same trade ID under the same execution_mode value.
-    UniqueConstraint("broker", "broker_trade_id", "execution_mode", name="uq_trade_outcome"),
+    # Widened to include broker (broker_trade_id is only unique WITHIN one
+    # broker's own ID space) and closed_at (real gap found 2026-09-05: OANDA
+    # can report a genuine PARTIAL close on the same tradeID — a later full
+    # close on that same trade would previously collide with this
+    # constraint and get silently dropped by ON CONFLICT DO NOTHING. Two
+    # distinct close events on the same trade can't share the exact same
+    # closed_at timestamp, so including it lets both be recorded instead of
+    # losing real P&L data. Not a full partial-exit/scale-out feature —
+    # each row is still one exit event; this just stops losing the second
+    # one when it happens).
+    UniqueConstraint("broker", "broker_trade_id", "execution_mode", "closed_at", name="uq_trade_outcome"),
 )
 
 
