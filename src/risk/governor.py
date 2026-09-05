@@ -65,7 +65,19 @@ FRESHNESS_THRESHOLDS_SECONDS = {
 }
 DEFAULT_FRESHNESS_THRESHOLD_SECONDS = 30.0
 MAX_SPREAD_MULTIPLE = 3.0  # reject if current spread > N x recent median spread
-MIN_CONFIDENCE = 0.35
+# Raised from 0.35 to 0.38, 2026-09-05, after real data showed the fusion
+# heuristic's confidence output is heavily compressed: of 181 real BUY/SELL
+# decisions to date, 78% sat in the 0.35-0.40 band and only 5 ever exceeded
+# 0.45 (max ever seen: 0.65) — MIN_CONFIDENCE was sitting right at the
+# floor of where almost all real signal volume lives, not meaningfully
+# filtering anything. 0.38 would have excluded the single worst trade to
+# date (a real -$626.50 MSFT loss at confidence 0.389) and the bottom ~56%
+# of historical trades by confidence, while still leaving enough volume
+# (79 of 181 historical trades still clear it) to keep accumulating toward
+# the 30-linked-outcome threshold that activates the meta-model
+# (src/models/train_meta_model.py) — going much higher (0.40+) would have
+# cut volume by >75%, working against reaching that threshold at all.
+MIN_CONFIDENCE = 0.38
 EVENT_LOCKOUT_MINUTES = 30
 
 # Autonomous Upgrade Spec sec. 11 "Market Regime Router": "High volatility ->
