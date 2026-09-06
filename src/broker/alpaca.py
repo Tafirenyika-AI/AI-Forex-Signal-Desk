@@ -277,8 +277,15 @@ class AlpacaBroker(BrokerAdapter):
                 # nothing in range, same quirk as the equities endpoint below.
                 raw_bars.extend((data.get("bars") or {}).get(instrument) or [])
             else:
+                # Real gap found live: this account's Alpaca subscription
+                # tier rejects recent-data requests against the default SIP
+                # (consolidated tape) feed with a 403 ("subscription does
+                # not permit querying recent SIP data") — feed="iex" uses
+                # IEX-only data instead, which the free/paper tier can
+                # access without restriction.
                 data = await self._request(
-                    self._data_client, "GET", f"/v2/stocks/{instrument}/bars", params=page_params,
+                    self._data_client, "GET", f"/v2/stocks/{instrument}/bars",
+                    params={**page_params, "feed": "iex"},
                 )
                 raw_bars.extend(data.get("bars") or [])
             page_token = data.get("next_page_token")
