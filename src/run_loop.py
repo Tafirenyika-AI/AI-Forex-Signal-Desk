@@ -63,6 +63,7 @@ from src.config import Settings, load_settings
 from src.challengers.definitions import Challenger, active_challengers
 from src.data.db import (
     authorizations as authorizations_table,
+    candles as candles_table,
     challenger_decisions as challenger_decisions_table,
     economic_events as economic_events_table,
     economic_surprises as economic_surprises_table,
@@ -74,6 +75,7 @@ from src.data.db import (
     risk_decisions as risk_decisions_table,
     trade_analogs as trade_analogs_table,
     trade_intents as trade_intents_table,
+    upsert_insert,
 )
 from src.decision.fusion import ComponentView, fuse, price_component_view
 from src.execution.paper_broker import PaperBroker
@@ -182,8 +184,37 @@ def _save_cached_model(pair: str, horizon_label: str, model: object) -> None:
         pickle.dump(model, f)
 
 
+async def _persist_candles(engine, broker_kind: BrokerKind, candles: list) -> None:
+    """Keeps the `candles` table growing during live cycles instead of going
+    stale the moment src/scripts/backfill_candles.py finishes its one-time
+    run — every candle here is already fetched and paid for (get_candles
+    runs every cycle regardless of this call), so storing it is nearly
+    free. Same upsert shape as backfill_candles.py's _fetch_and_store."""
+    if not candles:
+        return
+    rows = [
+        {
+            "instrument": c.instrument, "granularity": c.granularity, "time": c.time,
+            "open": c.open, "high": c.high, "low": c.low, "close": c.close,
+            "volume": c.volume, "complete": c.complete, "broker": broker_kind,
+        }
+        for c in candles
+    ]
+    with engine.begin() as conn:
+        stmt = upsert_insert(candles_table)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["broker", "instrument", "granularity", "time"],
+            set_={
+                "open": stmt.excluded.open, "high": stmt.excluded.high, "low": stmt.excluded.low,
+                "close": stmt.excluded.close, "volume": stmt.excluded.volume, "complete": stmt.excluded.complete,
+            },
+        )
+        conn.execute(stmt, rows)
+
+
 async def build_price_models(
-    broker, pairs: list[str], horizon_configs: list[HorizonConfig] = HORIZON_CONFIGS
+    broker, engine, broker_kind: BrokerKind, pairs: list[str],
+    horizon_configs: list[HorizonConfig] = HORIZON_CONFIGS,
 ) -> dict[tuple[str, str], object]:
     models: dict[tuple[str, str], object] = {}
     candle_cache: dict[tuple[str, str], list] = {}
@@ -200,6 +231,7 @@ async def build_price_models(
                 candle_cache[cache_key] = await broker.get_candles(
                     pair, cfg.granularity, count=TRAIN_CANDLE_COUNT
                 )
+                await _persist_candles(engine, broker_kind, candle_cache[cache_key])
             candles = candle_cache[cache_key]
             if len(candles) < 100:
                 logger.warning("Not enough %s candles to train a %s model for %s yet",
@@ -688,6 +720,7 @@ async def evaluate_pair(
     *,
     broker,
     engine,
+    broker_kind: BrokerKind,
     user_id: int,
     execution_service: ExecutionService,
     execution_mode: str,
@@ -761,6 +794,7 @@ async def evaluate_pair(
             candle_cache[cfg.granularity] = await broker.get_candles(
                 pair, cfg.granularity, count=TRAIN_CANDLE_COUNT
             )
+            await _persist_candles(engine, broker_kind, candle_cache[cfg.granularity])
         candles = candle_cache[cfg.granularity]
         if not candles:
             logger.warning("%s/%s: no candles returned", pair, cfg.label)
@@ -842,7 +876,7 @@ async def _build_broker_cycle_context(
         exec_mode_for_broker = "demo" if mode == "demo" else "paper"
 
     execution_service = ExecutionService(broker, engine, execution_mode=exec_mode_for_broker, user_id=user_id)
-    price_models = await build_price_models(broker, instruments)
+    price_models = await build_price_models(broker, engine, broker_kind, instruments)
     # Cross-currency USD conversion only ever means anything for forex
     # pairs (see _build_usd_conversion_rates' own "_" not in pair guard) —
     # skipped entirely for Alpaca, not just a no-op call.
@@ -940,6 +974,7 @@ async def _run_once_for_user(
                 await evaluate_pair(
                     broker=ctx.broker,
                     engine=engine,
+                    broker_kind=broker_kind,
                     user_id=user_ctx.user_id,
                     execution_service=ctx.execution_service,
                     execution_mode=mode,
