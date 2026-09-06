@@ -6,13 +6,23 @@ resumable: it only fetches what isn't already stored, on every run.
 
 OANDA's v3 candles endpoint caps at 5000 bars per request (per their own
 docs), so a deep backfill has to be chunked in time windows sized to stay
-under that per granularity, not fetched in one call.
+under that per granularity, not fetched in one call. Alpaca has no such
+per-request cap that matters here — AlpacaBroker.get_candles_range follows
+next_page_token internally — but the same chunk windows are reused anyway
+for simplicity; they just mean slightly more, smaller requests for Alpaca.
 
 Two gaps this fills relative to what's already stored: (1) forward —
 bring existing history up to "now" if it's gone stale, (2) backward —
 extend existing history further into the past, up to TARGET_LOOKBACK for
 that granularity, working backward one chunk at a time from whatever's
 already the oldest stored bar.
+
+Alpaca's instrument universe (AlpacaBroker.list_instruments()) is every
+tradable US equity + crypto pair on their platform — thousands, almost
+all irrelevant here. Unlike OANDA's list_instruments() (this account's own
+real, bounded pair universe), the Alpaca side instead backfills only the
+instruments actually configured on some real user's instrument list
+(active_trading_users), same instrument-routing logic run_loop.py uses.
 
 Run from the project root with the venv active:
     python -m src.scripts.backfill_candles
@@ -24,7 +34,10 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 
+from src.auth.service import active_trading_users
+from src.broker.alpaca import AlpacaBroker
 from src.broker.oanda import OandaBroker
+from src.broker.registry import BrokerKind, broker_kind_for
 from src.config import load_settings
 from src.data.db import candles as candles_table
 from src.data.db import get_engine
@@ -49,7 +62,7 @@ GRANULARITIES = ["M15", "H1", "H4"]
 
 
 async def _fetch_and_store(
-    broker: OandaBroker, engine, instrument: str, granularity: str,
+    broker, engine, broker_kind: BrokerKind, instrument: str, granularity: str,
     from_time: datetime, to_time: datetime,
 ) -> int:
     candles = await broker.get_candles_range(instrument, granularity, from_time, to_time)
@@ -59,7 +72,7 @@ async def _fetch_and_store(
         {
             "instrument": c.instrument, "granularity": c.granularity, "time": c.time,
             "open": c.open, "high": c.high, "low": c.low, "close": c.close,
-            "volume": c.volume, "complete": c.complete, "broker": "oanda",
+            "volume": c.volume, "complete": c.complete, "broker": broker_kind,
         }
         for c in candles
     ]
@@ -76,7 +89,7 @@ async def _fetch_and_store(
     return len(rows)
 
 
-async def _backfill_one(broker: OandaBroker, engine, instrument: str, granularity: str) -> None:
+async def _backfill_one(broker, engine, broker_kind: BrokerKind, instrument: str, granularity: str) -> None:
     # Real bug found live: OANDA rejects a 'to' timestamp of exactly "now"
     # ("Time is in the future") but accepts one with even a small buffer
     # subtracted — a minute of slack avoids this without meaningfully
@@ -88,7 +101,7 @@ async def _backfill_one(broker: OandaBroker, engine, instrument: str, granularit
     with engine.connect() as conn:
         existing_min, existing_max = conn.execute(
             select(func.min(candles_table.c.time), func.max(candles_table.c.time)).where(
-                candles_table.c.broker == "oanda",
+                candles_table.c.broker == broker_kind,
                 candles_table.c.instrument == instrument,
                 candles_table.c.granularity == granularity,
             )
@@ -98,14 +111,14 @@ async def _backfill_one(broker: OandaBroker, engine, instrument: str, granularit
 
     # Forward gap: bring existing history up to now.
     if existing_max is not None and existing_max < now:
-        total += await _fetch_and_store(broker, engine, instrument, granularity, existing_max, now)
+        total += await _fetch_and_store(broker, engine, broker_kind, instrument, granularity, existing_max, now)
 
     # Backward gap: extend existing history further into the past, one
     # chunk at a time, until reaching TARGET_LOOKBACK.
     cursor_end = existing_min if existing_min is not None else now
     while cursor_end > target_start:
         cursor_start = max(target_start, cursor_end - chunk)
-        total += await _fetch_and_store(broker, engine, instrument, granularity, cursor_start, cursor_end)
+        total += await _fetch_and_store(broker, engine, broker_kind, instrument, granularity, cursor_start, cursor_end)
         cursor_end = cursor_start
 
     print(f"{instrument} {granularity}: {total} bar(s) stored/updated "
@@ -123,7 +136,27 @@ async def main() -> None:
         for pair in pairs:
             for granularity in GRANULARITIES:
                 try:
-                    await _backfill_one(broker, engine, pair, granularity)
+                    await _backfill_one(broker, engine, "oanda", pair, granularity)
+                except Exception as exc:  # noqa: BLE001 — one pair's failure shouldn't stop the rest
+                    print(f"{pair} {granularity}: FAILED — {exc!r}")
+
+    if not settings.alpaca_api_key:
+        print("No Alpaca credentials configured — skipping Alpaca backfill.")
+        return
+
+    alpaca_instruments: set[str] = set()
+    for user_ctx in active_trading_users(engine):
+        for instrument in user_ctx.instrument_list:
+            if broker_kind_for(instrument) == "alpaca":
+                alpaca_instruments.add(instrument)
+    alpaca_pairs = sorted(alpaca_instruments)
+
+    async with AlpacaBroker(settings) as broker:
+        print(f"Backfilling {len(alpaca_pairs)} Alpaca instrument(s) x {len(GRANULARITIES)} granularities...")
+        for pair in alpaca_pairs:
+            for granularity in GRANULARITIES:
+                try:
+                    await _backfill_one(broker, engine, "alpaca", pair, granularity)
                 except Exception as exc:  # noqa: BLE001 — one pair's failure shouldn't stop the rest
                     print(f"{pair} {granularity}: FAILED — {exc!r}")
 
