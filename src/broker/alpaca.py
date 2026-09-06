@@ -252,20 +252,38 @@ class AlpacaBroker(BrokerAdapter):
         if end is not None:
             params["end"] = end.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        if asset_class_for(instrument) == "crypto":
-            data = await self._request(
-                self._data_client, "GET", "/v1beta3/crypto/us/bars",
-                params={**params, "symbols": instrument},
-            )
-            # .get(..., {}) still needs "or {}" — Alpaca returns a literal
-            # {"bars": null} rather than {} for a symbol with nothing in
-            # range, same quirk as the equities endpoint below.
-            raw_bars = (data.get("bars") or {}).get(instrument) or []
-        else:
-            data = await self._request(
-                self._data_client, "GET", f"/v2/stocks/{instrument}/bars", params=params,
-            )
-            raw_bars = data.get("bars") or []
+        # A count-bounded live-cycle call (limit <= TRAIN_CANDLE_COUNT) fits
+        # in one page and this loop exits immediately; a range-bounded
+        # backfill call (src/scripts/backfill_candles.py) can span years and
+        # needs every page — Alpaca's bars endpoints truncate silently at
+        # their own per-page cap (1000 bars) and hand back a
+        # "next_page_token" instead of erroring, so a caller that doesn't
+        # follow it just gets an incomplete result with no signal anything
+        # was cut off.
+        is_crypto = asset_class_for(instrument) == "crypto"
+        raw_bars: list[dict] = []
+        page_token: str | None = None
+        while True:
+            page_params = dict(params)
+            if page_token:
+                page_params["page_token"] = page_token
+            if is_crypto:
+                data = await self._request(
+                    self._data_client, "GET", "/v1beta3/crypto/us/bars",
+                    params={**page_params, "symbols": instrument},
+                )
+                # .get(..., {}) still needs "or {}" — Alpaca returns a
+                # literal {"bars": null} rather than {} for a symbol with
+                # nothing in range, same quirk as the equities endpoint below.
+                raw_bars.extend((data.get("bars") or {}).get(instrument) or [])
+            else:
+                data = await self._request(
+                    self._data_client, "GET", f"/v2/stocks/{instrument}/bars", params=page_params,
+                )
+                raw_bars.extend(data.get("bars") or [])
+            page_token = data.get("next_page_token")
+            if not page_token:
+                break
 
         candles = []
         for b in raw_bars:
