@@ -3,12 +3,11 @@
 Run from the project root with the venv active:
     python -m src.scripts.run_backtest
 
-Only ~500 candles per pair/granularity are stored right now (one
-download_candles.py run's worth), so these results are a plumbing check,
-not a statistically meaningful evaluation — sec. 14 requires multiple
-market regimes before a backtest result means anything. Run
-download_candles.py repeatedly over time (or fetch a larger historical
-window) before trusting these numbers for a go/no-go decision.
+Replays the real live decision path per bar (classify_regime + fuse, ATR
+stop/target exit) via src/backtest/engine.py — see that module's docstring
+for exactly which components are stubbed (macro/cross_market/news/session)
+and why. Uses whatever history src/scripts/backfill_candles.py has already
+stored; run that first if a pair here reports "not enough candles yet".
 """
 from __future__ import annotations
 
@@ -47,6 +46,12 @@ def main() -> None:
         print(f"{pair:10} {result.n_trades:9d} {result.net_return_pct:9.2f} "
               f"{result.max_drawdown_pct:9.2f} {result.hit_rate:9.2%} "
               f"{result.payoff_ratio:8.2f} {result.profit_factor:9.2f}")
+        print(f"  regime distribution: {result.regime_distribution}")
+        print(f"  stubbed components (score=0/conf=0, not real historical data): "
+              f"{', '.join(result.stubbed_components)}")
+
+        if not result.trade_log.empty:
+            print(f"  exit reasons: {result.trade_log['exit_reason'].value_counts().to_dict()}")
 
         if not result.calibration.empty:
             print(f"  calibration ({pair}):")

@@ -7,6 +7,26 @@ Rules enforced here, matching the blueprint directly:
 - Costs are applied: every simulated trade pays the spread on entry and exit.
 - Reports the metrics sec. 14.1 asks for: net return, max drawdown, hit
   rate, payoff ratio, profit factor, and calibration.
+
+Replays the REAL live decision path (src/run_loop.py's _evaluate_one_horizon)
+per bar — classify_regime() + fuse(), not just a raw confidence-threshold cut
+on the price model's p_up — and exits via a genuine bar-by-bar walk against
+the same ATR-based stop/target fuse() computes for live trading, not a fixed
+holding period. Two real, disclosed gaps versus live trading:
+
+1. macro/news/cross_market/session components are stubbed at
+   score=0/confidence=0 for every bar (see STUBBED_COMPONENTS) — their real
+   ingestion depth (economic_events, news_events, market_indicators) is far
+   shorter than the candle history now available (src/scripts/
+   backfill_candles.py), so there's no honest historical value to feed them
+   at most backtested bars. Only the `price` component (and regime, via
+   fuse()'s REGIME_WEIGHT_MULTIPLIERS/REGIME_THRESHOLD_MULTIPLIERS) drives
+   decisions here. This is disclosed in BacktestResult.stubbed_components,
+   never silently blended in as if real.
+2. The full risk governor (spread/freshness/event/agreement/correlation/
+   sizing/kill-switch gates) is not replayed — only its MIN_CONFIDENCE gate
+   is, since it's a single cheap, already-real constant and the closest
+   analog to "would this actually have been taken."
 """
 from __future__ import annotations
 
@@ -15,8 +35,11 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from src.decision.fusion import ComponentView, fuse, price_component_view
 from src.features.engine import FEATURE_COLUMNS, add_forward_target, feature_ready_frame
 from src.models.price_model import fit, predict_proba_up, walk_forward_splits
+from src.models.regime import classify_regime
+from src.risk.governor import MIN_CONFIDENCE
 
 # OANDA majors typically trade single-digit-pip spreads on demo; without a
 # stored historical spread series (candles don't carry one) this is a
@@ -32,11 +55,66 @@ ASSUMED_SPREAD_PIPS = {
 PIP_SIZE = {"USD_JPY": 0.01}
 DEFAULT_PIP_SIZE = 0.0001
 
+# See module docstring point 1 — these components have no honest historical
+# value to feed most backtested bars and are stubbed at score=0/confidence=0
+# (fuse() then gives them zero weight regardless of COMPONENT_WEIGHTS).
+STUBBED_COMPONENTS = ["macro", "cross_market", "news", "session"]
+
 
 def _spread_cost(instrument: str) -> float:
     pips = ASSUMED_SPREAD_PIPS.get(instrument, 1.5)
     pip_size = PIP_SIZE.get(instrument, DEFAULT_PIP_SIZE)
     return pips * pip_size
+
+
+def _simulate_exit(
+    candles_df: pd.DataFrame,
+    entry_idx: int,
+    direction: int,  # 1 = long, -1 = short
+    entry_price: float,
+    stop_distance: float,
+    target_distance: float,
+    max_hold_bars: int | None = None,
+) -> tuple[int, float, str]:
+    """Walks forward bar-by-bar from entry_idx+1, checking each bar's
+    high/low against the stop/target levels fixed at entry — the same
+    ATR-sized-once-at-decision-time mechanism fuse() uses for live trading
+    (src/decision/fusion.py's ATR_STOP_MULTIPLIER/REWARD_RISK_MULTIPLE), not
+    a fixed-bar-count exit. A single bar's range crossing BOTH levels is
+    possible with OHLC-only data (no intrabar tick order) — the stop is
+    assumed to hit first, the conservative assumption.
+
+    Returns (exit_idx, exit_price, exit_reason): exit_reason is "stop",
+    "target", "timeout" (max_hold_bars reached first) or "eod" (ran out of
+    candles before either level was hit — a real, disclosed limitation of
+    backtesting near the end of available history, not a bug: the trade is
+    honestly closed at the last available close rather than silently
+    dropped)."""
+    if direction == 1:
+        stop_level = entry_price - stop_distance
+        target_level = entry_price + target_distance
+    else:
+        stop_level = entry_price + stop_distance
+        target_level = entry_price - target_distance
+
+    last_idx = len(candles_df) - 1
+    end_idx = last_idx if max_hold_bars is None else min(last_idx, entry_idx + max_hold_bars)
+
+    for idx in range(entry_idx + 1, end_idx + 1):
+        bar = candles_df.iloc[idx]
+        if direction == 1:
+            stop_hit = bar["low"] <= stop_level
+            target_hit = bar["high"] >= target_level
+        else:
+            stop_hit = bar["high"] >= stop_level
+            target_hit = bar["low"] <= target_level
+        if stop_hit:
+            return idx, float(stop_level), "stop"
+        if target_hit:
+            return idx, float(target_level), "target"
+
+    reason = "timeout" if max_hold_bars is not None and end_idx < last_idx else "eod"
+    return end_idx, float(candles_df.iloc[end_idx]["close"]), reason
 
 
 @dataclass
@@ -52,6 +130,8 @@ class BacktestResult:
     profit_factor: float
     calibration: pd.DataFrame
     trade_log: pd.DataFrame
+    regime_distribution: dict[str, int]
+    stubbed_components: list[str]
     equity_curve: pd.Series = field(repr=False)
 
 
@@ -62,10 +142,12 @@ def run_walk_forward_backtest(
     horizon_bars: int = 4,
     train_window: int = 250,
     test_window: int = 50,
-    confidence_threshold: float = 0.58,
+    min_confidence: float = MIN_CONFIDENCE,
+    max_hold_bars: int | None = None,
 ) -> BacktestResult | None:
     featured = feature_ready_frame(candles_df)
-    labeled = add_forward_target(featured, horizon_bars)
+    classified = classify_regime(featured)
+    labeled = add_forward_target(classified, horizon_bars)
     usable = labeled.dropna(subset=["target_up"]).reset_index(drop=True)
 
     splits = list(walk_forward_splits(len(usable), train_window, test_window))
@@ -76,6 +158,7 @@ def run_walk_forward_backtest(
     trades = []
     all_oos_probs = []
     all_oos_actuals = []
+    regime_counts: dict[str, int] = {}
 
     for split in splits:
         train_df = usable.iloc[split.train_start : split.train_end]
@@ -87,30 +170,52 @@ def run_walk_forward_backtest(
         all_oos_actuals.extend(test_df["target_up"].astype(int).to_numpy())
 
         for i, (_, row) in enumerate(test_df.iterrows()):
-            p_up = probs[i]
-            if p_up >= confidence_threshold:
-                direction = 1
-            elif p_up <= (1 - confidence_threshold):
-                direction = -1
-            else:
-                continue  # confidence gate: NO TRADE
+            p_up = float(probs[i])
+            regime = str(row["regime"])
+            regime_counts[regime] = regime_counts.get(regime, 0) + 1
 
-            entry = row["close"]
-            exit_idx = row.name + horizon_bars
-            if exit_idx >= len(usable):
+            component_views = [
+                price_component_view(p_up),
+                *(ComponentView(name, 0.0, 0.0) for name in STUBBED_COMPONENTS),
+            ]
+            decision = fuse(
+                instrument=instrument,
+                horizon=f"{horizon_bars}bar",
+                regime=regime,
+                component_views=component_views,
+                current_price=float(row["close"]),
+                atr_14=float(row["atr_14"]),
+                data_freshness={},  # nothing to be stale against in a backtest
+                now=row["time"].to_pydatetime(),
+            )
+
+            if decision.action == "NO_TRADE" or decision.confidence < min_confidence:
                 continue
-            exit_price = usable.iloc[exit_idx]["close"]
+            if not decision.stop_distance or not decision.take_profit_distance:
+                continue
 
-            gross_return = direction * (exit_price - entry) / entry
-            cost_return = spread / entry  # spread paid once, round-turn approximated as 1x
+            direction = 1 if decision.action == "BUY" else -1
+            entry_idx = int(row.name)
+            entry_price = float(row["close"])
+            exit_idx, exit_price, exit_reason = _simulate_exit(
+                usable, entry_idx, direction, entry_price,
+                decision.stop_distance, decision.take_profit_distance, max_hold_bars,
+            )
+
+            gross_return = direction * (exit_price - entry_price) / entry_price
+            cost_return = spread / entry_price  # spread paid once, round-turn approximated as 1x
             net_return = gross_return - cost_return
 
             trades.append(
                 {
                     "time": row["time"],
+                    "exit_time": usable.iloc[exit_idx]["time"],
                     "direction": "BUY" if direction == 1 else "SELL",
-                    "entry": entry,
+                    "entry": entry_price,
                     "exit": exit_price,
+                    "exit_reason": exit_reason,
+                    "regime": regime,
+                    "confidence": decision.confidence,
                     "p_up": p_up,
                     "net_return": net_return,
                     "win": net_return > 0,
@@ -131,6 +236,8 @@ def run_walk_forward_backtest(
             profit_factor=float("nan"),
             calibration=pd.DataFrame(),
             trade_log=trade_log,
+            regime_distribution=regime_counts,
+            stubbed_components=STUBBED_COMPONENTS,
             equity_curve=pd.Series(dtype=float),
         )
 
@@ -160,6 +267,8 @@ def run_walk_forward_backtest(
         profit_factor=profit_factor,
         calibration=calibration,
         trade_log=trade_log,
+        regime_distribution=regime_counts,
+        stubbed_components=STUBBED_COMPONENTS,
         equity_curve=equity_curve,
     )
 
