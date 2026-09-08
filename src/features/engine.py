@@ -15,7 +15,8 @@ from sqlalchemy.engine import Engine
 
 from src.data.db import candles as candles_table
 
-FEATURE_COLUMNS = [
+# Causal, produced directly by compute_features() below.
+TECHNICAL_FEATURE_COLUMNS = [
     "log_return_1",
     "log_return_4",
     "log_return_12",
@@ -26,6 +27,20 @@ FEATURE_COLUMNS = [
     "range_pct",
     "body_pct",
 ]
+# NOT produced by compute_features() — these come from
+# src.models.regime.classify_regime(), which every real caller already runs
+# on feature_ready_frame()'s output before training/predicting (see
+# run_loop.py's _evaluate_one_horizon and src/backtest/engine.py). Continuous
+# percentiles, not the one-hot `regime` label itself — a GBM keeps more
+# information from a continuous 0..1 rank than from a categorical bucket.
+REGIME_FEATURE_COLUMNS = ["vol_percentile", "trend_percentile"]
+
+# The full model input set (src/models/price_model.py's fit/predict_proba_up)
+# — requires classify_regime() to have already run, unlike
+# TECHNICAL_FEATURE_COLUMNS alone (see feature_ready_frame()'s own dropna,
+# which deliberately only checks the technical set, since regime hasn't run
+# yet at that point in the pipeline).
+FEATURE_COLUMNS = TECHNICAL_FEATURE_COLUMNS + REGIME_FEATURE_COLUMNS
 
 
 def load_candles_df(engine: Engine, instrument: str, granularity: str) -> pd.DataFrame:
@@ -99,6 +114,11 @@ def add_forward_target(df: pd.DataFrame, horizon_bars: int) -> pd.DataFrame:
 
 
 def feature_ready_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """Rows where every causal feature is defined (post warm-up window)."""
+    """Rows where every causal technical feature is defined (post warm-up
+    window). Only TECHNICAL_FEATURE_COLUMNS — REGIME_FEATURE_COLUMNS don't
+    exist yet at this point in the pipeline (classify_regime() hasn't run;
+    every real caller runs it on this function's own output, then does its
+    own additional dropna(subset=REGIME_FEATURE_COLUMNS) before training,
+    since regime has its own, longer warm-up window)."""
     featured = compute_features(df)
-    return featured.dropna(subset=FEATURE_COLUMNS).reset_index(drop=True)
+    return featured.dropna(subset=TECHNICAL_FEATURE_COLUMNS).reset_index(drop=True)

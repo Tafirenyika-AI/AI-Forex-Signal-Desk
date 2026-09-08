@@ -40,12 +40,24 @@ from typing import Any
 # actually confirm a direction. Modest starting weight, same posture as
 # news's own introduction above — real live signal, not yet battle-tested
 # over many cycles.
+#
+# currency_strength added 2026-09 (Autonomous Upgrade Spec sec. 10,
+# src/models/currency_strength.py): diffs a forex pair's base vs. quote
+# currency composite strength. Deliberately NOT weighted like a genuinely
+# independent 6th vote — its own composite already folds in macro +
+# cross_market + news (per-currency, not per-pair, but the same underlying
+# signals), so weighting it like price/macro/etc. would double-count those
+# three components under a fourth name. Shipped at a small weight, below
+# even news/session's own modest introduction above — a cross-check/tie-
+# breaker only, revisit upward only with real evidence it adds independent
+# signal beyond what macro/cross_market/news already contribute directly.
 COMPONENT_WEIGHTS = {
     "price": 0.50,
     "macro": 0.20,
     "cross_market": 0.20,
     "news": 0.10,
     "session": 0.10,
+    "currency_strength": 0.05,
 }
 
 # Spec sec. 16's freshness-confidence check needs its own thresholds,

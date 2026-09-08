@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import hashlib
 import json
 import logging
 import pickle
@@ -53,7 +54,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 
 from src.auth.service import UserTradingContext, active_trading_users
 from src.broker.alpaca import AlpacaBroker
@@ -80,9 +81,15 @@ from src.data.db import (
 from src.decision.fusion import ComponentView, fuse, price_component_view
 from src.execution.paper_broker import PaperBroker
 from src.execution.service import ExecutionService
-from src.features.engine import FEATURE_COLUMNS, add_forward_target, feature_ready_frame
+from src.features.engine import (
+    FEATURE_COLUMNS,
+    REGIME_FEATURE_COLUMNS,
+    add_forward_target,
+    feature_ready_frame,
+)
 from src.memory.analog_retrieval import find_similar_trades
 from src.models.cross_market_model import pair_cross_market_score
+from src.models.currency_strength import CurrencyStrengthState, compute_all_currency_strengths, pair_currency_strength_score
 from src.models.macro_model import pair_macro_score
 from src.models.news_model import pair_news_score
 from src.models.price_model import fit as fit_price_model, predict_proba_up
@@ -149,6 +156,21 @@ MODEL_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "model_cache
 MODEL_RETRAIN_INTERVAL = timedelta(hours=1)
 
 
+def _feature_columns_fingerprint() -> str:
+    """A cached model's pickled sklearn Pipeline is fit against FEATURE_
+    COLUMNS' exact shape at training time — a later FEATURE_COLUMNS change
+    (e.g. adding vol_percentile/trend_percentile, 2026-09) makes any
+    still-cached pickle silently wrong-shaped: it loads fine (pickle.load
+    doesn't check this), but predict_proba_up's df[FEATURE_COLUMNS] would
+    then hand it more/fewer columns than it was fit on, raising a shape-
+    mismatch error at PREDICT time — same blast radius as the "/" path bug
+    below (uncaught, crashes the whole cycle), just a different trigger.
+    Folding a fingerprint of FEATURE_COLUMNS into the cache path makes a
+    shape change a guaranteed cache MISS instead: the old file is simply
+    never found, so it always retrains rather than ever risking a load."""
+    return hashlib.sha256(",".join(FEATURE_COLUMNS).encode()).hexdigest()[:8]
+
+
 def _model_cache_path(pair: str, horizon_label: str) -> Path:
     # Real production bug found live 2026-08-24: crypto pairs contain "/"
     # (BTC/USD), which a naive f-string turns into a path separator —
@@ -160,7 +182,7 @@ def _model_cache_path(pair: str, horizon_label: str) -> Path:
     # the exception propagates out of _build_broker_cycle_context before
     # the per-pair evaluation loop that writes trade_intents ever runs.
     safe_pair = pair.replace("/", "-")
-    return MODEL_CACHE_DIR / f"{safe_pair}_{horizon_label}.pkl"
+    return MODEL_CACHE_DIR / f"{safe_pair}_{horizon_label}_{_feature_columns_fingerprint()}.pkl"
 
 
 def _load_cached_model(pair: str, horizon_label: str) -> object | None:
@@ -240,7 +262,15 @@ async def build_price_models(
 
             df = pd.DataFrame([dataclasses.asdict(c) for c in candles])
             featured = feature_ready_frame(df)
-            labeled = add_forward_target(featured, cfg.horizon_bars).dropna(subset=["target_up"])
+            # classify_regime() must run before training, not just before
+            # live prediction — FEATURE_COLUMNS now includes its
+            # vol_percentile/trend_percentile output (see
+            # src/features/engine.py), so a model fit without this step
+            # would be missing 2 of its own declared input columns.
+            classified = classify_regime(featured)
+            labeled = add_forward_target(classified, cfg.horizon_bars).dropna(
+                subset=["target_up", *REGIME_FEATURE_COLUMNS]
+            )
             if len(labeled) < 60:
                 logger.warning("Not enough labeled rows to train a %s model for %s yet", cfg.label, pair)
                 continue
@@ -295,6 +325,27 @@ async def _build_usd_conversion_rates(broker, instrument_list: list[str]) -> dic
             continue
         rates[cur] = mid if quote_is_usd else (1.0 / mid)
     return rates
+
+
+def _load_latest_pair_p_ups(engine) -> dict[str, float]:
+    """Most recent price-component P(up) per instrument, straight from what
+    this system already logs every cycle (predictions_table, component=
+    "price") — no retraining or extra broker calls needed. Same query
+    src/dashboard/app.py's compute_currency_map() uses. Feeds
+    compute_all_currency_strengths(), which src/models/currency_strength.py's
+    module docstring frames as an aggregation layer over already-computed
+    per-currency state, not new data collection."""
+    subq = (
+        select(predictions_table.c.instrument, func.max(predictions_table.c.id).label("max_id"))
+        .where(predictions_table.c.component == "price")
+        .group_by(predictions_table.c.instrument)
+        .subquery()
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(predictions_table).join(subq, predictions_table.c.id == subq.c.max_id)
+        ).mappings().all()
+    return {r["instrument"]: json.loads(r["raw_json"])["p_up"] for r in rows}
 
 
 def _recent_median_spread(engine, instrument: str) -> float | None:
@@ -403,6 +454,8 @@ async def _evaluate_one_horizon(
     cross_market_conf: float,
     session_score: float,
     session_conf: float,
+    currency_strength_score: float,
+    currency_strength_conf: float,
     london_range: PriorSessionRange | None,
     calendar_covers_currency: bool,
     upcoming_tier1_event: bool,
@@ -440,6 +493,7 @@ async def _evaluate_one_horizon(
         ComponentView("cross_market", cross_market_score, cross_market_conf),
         ComponentView("news", news_score, news_conf),
         ComponentView("session", session_score, session_conf),
+        ComponentView("currency_strength", currency_strength_score, currency_strength_conf),
     ]
     data_freshness = {"price": price_age_seconds, "candles": candle_age_seconds}
 
@@ -572,10 +626,11 @@ async def _evaluate_one_horizon(
 
     logger.info(
         "%s/%s: regime=%s p_up=%.3f macro=%.2f(%.2f) xmkt=%.2f(%.2f) news=%.2f(%.2f) "
-        "session=%.2f(%.2f) -> %s conf=%.2f",
+        "session=%.2f(%.2f) ccy_str=%.2f(%.2f) -> %s conf=%.2f",
         pair, cfg.label, regime, p_up, macro_score, macro_conf,
         cross_market_score, cross_market_conf, news_score, news_conf,
-        session_score, session_conf, decision.action, decision.confidence,
+        session_score, session_conf, currency_strength_score, currency_strength_conf,
+        decision.action, decision.confidence,
     )
 
     if decision.action == "NO_TRADE":
@@ -729,6 +784,7 @@ async def evaluate_pair(
     economic_events: list[dict],
     news_events: list[dict],
     market_indicator_rows: list[dict],
+    currency_strengths: dict[str, CurrencyStrengthState],
     allow_unverified_event_risk: bool,
     auto_execute: bool,
     meta_model,
@@ -768,8 +824,10 @@ async def evaluate_pair(
     is_forex = asset_class_for(pair) == "forex"
     if is_forex:
         session_score, session_conf = await pair_session_score(broker, pair, now, price.mid)
+        currency_strength_score, currency_strength_conf = pair_currency_strength_score(currency_strengths, pair)
     else:
         session_score, session_conf = 0.0, 0.0
+        currency_strength_score, currency_strength_conf = 0.0, 0.0
     # Only fetched during New York's own opening transition window (the
     # specific handoff the "NY reversal" challenger is about) — an extra
     # broker call every cycle for every pair, for a signal that only ever
@@ -820,6 +878,8 @@ async def evaluate_pair(
             cross_market_conf=cross_market_conf,
             session_score=session_score,
             session_conf=session_conf,
+            currency_strength_score=currency_strength_score,
+            currency_strength_conf=currency_strength_conf,
             london_range=london_range,
             calendar_covers_currency=calendar_covers_currency,
             upcoming_tier1_event=upcoming_tier1_event,
@@ -896,6 +956,7 @@ async def _run_once_for_user(
     user_ctx: UserTradingContext, engine, allow_unverified_event_risk: bool,
     economic_events: list[dict], news_events: list[dict], market_indicator_rows: list[dict],
     economic_surprises: list[dict], challengers: list[Challenger], meta_model,
+    currency_strengths: dict[str, CurrencyStrengthState],
 ) -> None:
     """One full decision cycle for exactly one user's own broker account(s)
     and instrument list — the "one shared engine, per-user data"
@@ -983,6 +1044,7 @@ async def _run_once_for_user(
                     economic_events=economic_events,
                     news_events=news_events,
                     market_indicator_rows=market_indicator_rows,
+                    currency_strengths=currency_strengths,
                     allow_unverified_event_risk=allow_unverified_event_risk,
                     auto_execute=auto_execute,
                     meta_model=meta_model,
@@ -1035,6 +1097,14 @@ async def run_once(
     if meta_model is not None:
         logger.info("Using deployed meta-model for confidence calibration")
 
+    # currency_strength (Autonomous Upgrade Spec sec. 10) — same "computed
+    # once, shared across every user" reasoning as the market data above;
+    # not user-scoped (predictions_table has no user_id, see its schema).
+    pair_p_ups = _load_latest_pair_p_ups(engine)
+    currency_strengths = compute_all_currency_strengths(
+        pair_p_ups, economic_events, news_events, market_indicator_rows, datetime.now(timezone.utc)
+    )
+
     for user_ctx in users:
         logger.info("=== Running cycle for %s (mode=%s, %d instruments) ===",
                     user_ctx.email, user_ctx.execution_mode, len(user_ctx.instrument_list))
@@ -1042,7 +1112,7 @@ async def run_once(
             await _run_once_for_user(
                 user_ctx, engine, allow_unverified_event_risk,
                 economic_events, news_events, market_indicator_rows,
-                economic_surprises, challengers, meta_model,
+                economic_surprises, challengers, meta_model, currency_strengths,
             )
         except Exception:
             logger.exception("Cycle failed for %s; continuing with remaining users", user_ctx.email)

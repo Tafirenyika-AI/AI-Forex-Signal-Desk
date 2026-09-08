@@ -36,7 +36,7 @@ import numpy as np
 import pandas as pd
 
 from src.decision.fusion import ComponentView, fuse, price_component_view
-from src.features.engine import FEATURE_COLUMNS, add_forward_target, feature_ready_frame
+from src.features.engine import REGIME_FEATURE_COLUMNS, add_forward_target, feature_ready_frame
 from src.models.price_model import fit, predict_proba_up, walk_forward_splits
 from src.models.regime import classify_regime
 from src.risk.governor import MIN_CONFIDENCE
@@ -148,7 +148,7 @@ def run_walk_forward_backtest(
     featured = feature_ready_frame(candles_df)
     classified = classify_regime(featured)
     labeled = add_forward_target(classified, horizon_bars)
-    usable = labeled.dropna(subset=["target_up"]).reset_index(drop=True)
+    usable = labeled.dropna(subset=["target_up", *REGIME_FEATURE_COLUMNS]).reset_index(drop=True)
 
     splits = list(walk_forward_splits(len(usable), train_window, test_window))
     if not splits:

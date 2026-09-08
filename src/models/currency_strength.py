@@ -123,6 +123,34 @@ def compute_currency_strength(
     )
 
 
+def pair_currency_strength_score(
+    currency_strengths: dict[str, CurrencyStrengthState], pair: str
+) -> tuple[float, float]:
+    """Diffs a forex pair's base vs. quote currency composite strength into
+    a single pair-level (score, confidence) — the shape src/decision/
+    fusion.py's ComponentView expects, same convention as pair_macro_score/
+    pair_cross_market_score/pair_news_score in the sibling *_model.py
+    modules. score is base_strength - quote_strength halved into -1..1
+    (positive = bullish base, i.e. bullish the pair); confidence is the
+    weaker of the two sides' own confidence (min, not average) — the
+    cautious choice, matching this system's general convention of assuming
+    the less favorable case when two readings disagree (see e.g.
+    src/backtest/engine.py's same-bar stop-vs-target tie-break). Returns
+    (0.0, 0.0) — "no opinion" — for a currency not in CURRENCIES or a
+    non-forex pair (no "_"), same convention every other component here
+    uses when it has nothing to say."""
+    if "_" not in pair:
+        return 0.0, 0.0
+    base, quote = pair.split("_")
+    base_state = currency_strengths.get(base)
+    quote_state = currency_strengths.get(quote)
+    if base_state is None or quote_state is None:
+        return 0.0, 0.0
+    score = max(-1.0, min(1.0, (base_state.composite_score - quote_state.composite_score) / 2))
+    confidence = min(base_state.composite_confidence, quote_state.composite_confidence)
+    return score, confidence
+
+
 def compute_all_currency_strengths(
     pair_p_ups: dict[str, float],
     economic_events: list[dict],
