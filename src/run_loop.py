@@ -81,10 +81,12 @@ from src.data.db import (
 from src.decision.fusion import ComponentView, fuse, price_component_view
 from src.execution.paper_broker import PaperBroker
 from src.execution.service import ExecutionService
+from src.execution.trailing_stop import compute_new_stop
 from src.features.engine import (
     FEATURE_COLUMNS,
     REGIME_FEATURE_COLUMNS,
     add_forward_target,
+    compute_features,
     feature_ready_frame,
 )
 from src.memory.analog_retrieval import find_similar_trades
@@ -280,6 +282,71 @@ async def build_price_models(
             logger.info("Trained %s/%s price model on %d rows", pair, cfg.label, len(labeled))
 
     return models
+
+
+async def _recent_atr(broker, instrument: str, granularity: str = "H1", count: int = 30) -> float | None:
+    """A cheap, standalone atr_14 reading for Phase D2's trailing-stop step
+    — doesn't need the full feature/regime/decision pipeline evaluate_pair
+    runs, just one fresh ATR value. count=30 clears atr_14's own 14-period
+    warm-up with margin; None if there still isn't enough history."""
+    candles = await broker.get_candles(instrument, granularity, count=count)
+    if len(candles) < 15:
+        return None
+    df = pd.DataFrame([dataclasses.asdict(c) for c in candles])
+    atr = compute_features(df)["atr_14"].iloc[-1]
+    return float(atr) if pd.notna(atr) else None
+
+
+async def _update_trailing_stops(broker_kind: BrokerKind, broker, execution_mode: str) -> None:
+    """Phase D2 — gated behind --enable-trailing-stops (see main()) and only
+    ever called for the two contexts where a real, safely-modifiable
+    broker-side stop exists: a real OANDA demo-account trade (never paper —
+    PaperBroker has no real broker-side order to modify; never shadow,
+    which places no real orders at all), or an Alpaca crypto position
+    (equities excluded — see AlpacaBroker.modify_stop_loss's own docstring
+    on the whole-bracket-cancellation finding that rules them out). The
+    broker's own live response is the only source of truth for each
+    position's CURRENT stop — no local ledger is kept (see
+    src/execution/trailing_stop.py's module docstring on why)."""
+    if broker_kind == "oanda":
+        if execution_mode != "demo":
+            return
+        for trade in await broker.open_trades():
+            stop_order = trade.get("stopLossOrder")
+            if not stop_order:
+                continue  # no stop attached to this trade — nothing to trail
+            instrument = trade["instrument"]
+            direction = 1 if float(trade["currentUnits"]) > 0 else -1
+            current_stop = float(stop_order["price"])
+            atr_14 = await _recent_atr(broker, instrument)
+            prices = await broker.get_current_prices([instrument])
+            if atr_14 is None or not prices:
+                continue
+            new_stop = compute_new_stop(direction, prices[0].mid, current_stop, atr_14)
+            if new_stop is None:
+                continue
+            logger.info("%s: trailing stop %.5f -> %.5f (trade %s)",
+                        instrument, current_stop, new_stop, trade["id"])
+            await broker.modify_stop_loss(trade["id"], instrument, new_stop)
+
+    elif broker_kind == "alpaca":
+        for p in await broker.positions():
+            instrument = p["symbol"]
+            if asset_class_for(instrument) != "crypto":
+                continue  # equities excluded — see module docstring
+            current_stop = await broker.get_crypto_stop_price(instrument)
+            if current_stop is None:
+                continue  # no live stop order for this position — nothing to trail
+            direction = 1 if p.get("side") == "long" else -1
+            atr_14 = await _recent_atr(broker, instrument)
+            prices = await broker.get_current_prices([instrument])
+            if atr_14 is None or not prices:
+                continue
+            new_stop = compute_new_stop(direction, prices[0].mid, current_stop, atr_14)
+            if new_stop is None:
+                continue
+            logger.info("%s: trailing stop %.2f -> %.2f", instrument, current_stop, new_stop)
+            await broker.modify_stop_loss(instrument, new_stop)
 
 
 async def _build_usd_conversion_rates(broker, instrument_list: list[str]) -> dict[str, float]:
@@ -957,6 +1024,7 @@ async def _run_once_for_user(
     economic_events: list[dict], news_events: list[dict], market_indicator_rows: list[dict],
     economic_surprises: list[dict], challengers: list[Challenger], meta_model,
     currency_strengths: dict[str, CurrencyStrengthState],
+    enable_trailing_stops: bool = False,
 ) -> None:
     """One full decision cycle for exactly one user's own broker account(s)
     and instrument list — the "one shared engine, per-user data"
@@ -1029,6 +1097,20 @@ async def _run_once_for_user(
                 broker_kind, settings, engine, user_ctx.user_id, mode, instruments,
             )
 
+        if enable_trailing_stops:
+            for broker_kind, ctx in broker_contexts.items():
+                try:
+                    await _update_trailing_stops(broker_kind, ctx.broker, mode)
+                except Exception:
+                    # Isolated on purpose: a trailing-stop failure must never
+                    # abort this user's entire cycle (the per-pair evaluate_pair
+                    # loop below has nothing to do with this and should still
+                    # run) — it just retries next cycle instead.
+                    logger.exception(
+                        "%s: trailing-stop update failed for %s broker — will retry next cycle",
+                        user_ctx.email, broker_kind,
+                    )
+
         for broker_kind, instruments in instruments_by_broker.items():
             ctx = broker_contexts[broker_kind]
             for pair in instruments:
@@ -1064,7 +1146,7 @@ async def _run_once_for_user(
 
 async def run_once(
     default_mode: str, allow_unverified_event_risk: bool, default_auto_execute: bool = False,
-    only_user_id: int | None = None,
+    only_user_id: int | None = None, enable_trailing_stops: bool = False,
 ) -> None:
     """Runs one decision cycle for every active, onboarded user (the
     scheduled-task path — AIForex_DemoTradingCycle), or for a single user
@@ -1073,7 +1155,11 @@ async def run_once(
     `default_auto_execute` only matter as CLI-invocation compatibility —
     each user's actual mode/auto_execute comes from their own stored
     user_preferences (src/auth/service.py), not from this process-wide
-    argument, since that's the whole point of per-user config."""
+    argument, since that's the whole point of per-user config.
+    `enable_trailing_stops` is deliberately NOT per-user like the above —
+    Phase D2 is a brand-new, unproven live-order-modification feature, so
+    it's a single conscious process-wide CLI flag (see main()), not
+    something any user could silently enable from the dashboard."""
     settings = load_settings()
     engine = get_engine(settings.db_path)
 
@@ -1113,15 +1199,19 @@ async def run_once(
                 user_ctx, engine, allow_unverified_event_risk,
                 economic_events, news_events, market_indicator_rows,
                 economic_surprises, challengers, meta_model, currency_strengths,
+                enable_trailing_stops,
             )
         except Exception:
             logger.exception("Cycle failed for %s; continuing with remaining users", user_ctx.email)
 
 
-async def run_forever(mode: str, interval_seconds: int, allow_unverified_event_risk: bool, auto_execute: bool) -> None:
+async def run_forever(
+    mode: str, interval_seconds: int, allow_unverified_event_risk: bool, auto_execute: bool,
+    enable_trailing_stops: bool = False,
+) -> None:
     while True:
         try:
-            await run_once(mode, allow_unverified_event_risk, auto_execute)
+            await run_once(mode, allow_unverified_event_risk, auto_execute, enable_trailing_stops=enable_trailing_stops)
         except Exception:
             logger.exception("Cycle failed; will retry next interval (fail closed — no orders assumed sent)")
         await asyncio.sleep(interval_seconds)
@@ -1150,6 +1240,17 @@ def main() -> None:
         "docstring) to accumulate outcome history for meta-model training. "
         "Every other risk gate still applies.",
     )
+    parser.add_argument(
+        "--enable-trailing-stops",
+        action="store_true",
+        help="Phase D2: ratchet an open position's stop-loss in its favor "
+        "each cycle using live ATR (backtested in src/backtest/engine.py's "
+        "_simulate_trailing_exit — drawdown/payoff improved in every pair "
+        "tested, hit rate dropped, net return was mixed). Only ever acts on "
+        "a real OANDA --mode demo trade or an Alpaca crypto position — never "
+        "paper, shadow, or Alpaca equities (see _update_trailing_stops's own "
+        "docstring). OFF by default; this modifies real broker-side orders.",
+    )
     args = parser.parse_args()
 
     if args.mode == "demo" and args.allow_unverified_event_risk:
@@ -1173,9 +1274,15 @@ def main() -> None:
             logger.info("Skipping this scheduled tick: %s", reason)
             return
         logger.info("Running scheduled cycle: %s", reason)
-        asyncio.run(run_once(args.mode, args.allow_unverified_event_risk, args.auto_execute))
+        asyncio.run(run_once(
+            args.mode, args.allow_unverified_event_risk, args.auto_execute,
+            enable_trailing_stops=args.enable_trailing_stops,
+        ))
     else:
-        asyncio.run(run_forever(args.mode, args.interval, args.allow_unverified_event_risk, args.auto_execute))
+        asyncio.run(run_forever(
+            args.mode, args.interval, args.allow_unverified_event_risk, args.auto_execute,
+            args.enable_trailing_stops,
+        ))
 
 
 if __name__ == "__main__":
