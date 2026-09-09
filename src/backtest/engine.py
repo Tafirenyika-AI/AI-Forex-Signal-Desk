@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from src.decision.fusion import ComponentView, fuse, price_component_view
+from src.decision.fusion import ATR_STOP_MULTIPLIER, ComponentView, fuse, price_component_view
 from src.features.engine import REGIME_FEATURE_COLUMNS, add_forward_target, feature_ready_frame
 from src.models.price_model import fit, predict_proba_up, walk_forward_splits
 from src.models.regime import classify_regime
@@ -117,6 +117,68 @@ def _simulate_exit(
     return end_idx, float(candles_df.iloc[end_idx]["close"]), reason
 
 
+def _simulate_trailing_exit(
+    candles_df: pd.DataFrame,
+    entry_idx: int,
+    direction: int,  # 1 = long, -1 = short
+    entry_price: float,
+    stop_distance: float,
+    target_distance: float,
+    atr_multiplier: float = ATR_STOP_MULTIPLIER,
+    max_hold_bars: int | None = None,
+) -> tuple[int, float, str]:
+    """Phase D1 — same bar-by-bar walk as _simulate_exit, but the stop
+    ratchets in the trade's favor each bar using THAT bar's own atr_14
+    (never against it — a long's stop only ever rises, a short's only ever
+    falls), recomputed with the same ATR_STOP_MULTIPLIER fuse() uses for
+    the initial stop. The target does not trail (Phase D's scope is a
+    trailing STOP, not a trailing target).
+
+    Stays causal (no lookahead) by ordering each bar's work as: (1) check
+    the hit against the stop level as of the START of this bar (set by
+    prior bars), (2) only then ratchet the stop using this bar's own
+    close/atr_14, for the NEXT bar's check. A bar can never move its own
+    stop and then get evaluated against the moved level in the same step —
+    otherwise a big favorable move could "dodge" a stop-out that same bar's
+    low/high should have triggered under the pre-ratchet level.
+
+    Returns (exit_idx, exit_price, exit_reason) — same vocabulary as
+    _simulate_exit ("stop", "target", "timeout", "eod")."""
+    if direction == 1:
+        stop_level = entry_price - stop_distance
+        target_level = entry_price + target_distance
+    else:
+        stop_level = entry_price + stop_distance
+        target_level = entry_price - target_distance
+
+    last_idx = len(candles_df) - 1
+    end_idx = last_idx if max_hold_bars is None else min(last_idx, entry_idx + max_hold_bars)
+
+    for idx in range(entry_idx + 1, end_idx + 1):
+        bar = candles_df.iloc[idx]
+        if direction == 1:
+            stop_hit = bar["low"] <= stop_level
+            target_hit = bar["high"] >= target_level
+        else:
+            stop_hit = bar["high"] >= stop_level
+            target_hit = bar["low"] <= target_level
+        if stop_hit:
+            return idx, float(stop_level), "stop"
+        if target_hit:
+            return idx, float(target_level), "target"
+
+        bar_atr = bar["atr_14"]
+        if pd.notna(bar_atr) and bar_atr > 0:
+            candidate_distance = atr_multiplier * bar_atr
+            if direction == 1:
+                stop_level = max(stop_level, bar["close"] - candidate_distance)
+            else:
+                stop_level = min(stop_level, bar["close"] + candidate_distance)
+
+    reason = "timeout" if max_hold_bars is not None and end_idx < last_idx else "eod"
+    return end_idx, float(candles_df.iloc[end_idx]["close"]), reason
+
+
 @dataclass
 class BacktestResult:
     instrument: str
@@ -144,6 +206,7 @@ def run_walk_forward_backtest(
     test_window: int = 50,
     min_confidence: float = MIN_CONFIDENCE,
     max_hold_bars: int | None = None,
+    use_trailing_stop: bool = False,
 ) -> BacktestResult | None:
     featured = feature_ready_frame(candles_df)
     classified = classify_regime(featured)
@@ -197,9 +260,10 @@ def run_walk_forward_backtest(
             direction = 1 if decision.action == "BUY" else -1
             entry_idx = int(row.name)
             entry_price = float(row["close"])
-            exit_idx, exit_price, exit_reason = _simulate_exit(
+            exit_fn = _simulate_trailing_exit if use_trailing_stop else _simulate_exit
+            exit_idx, exit_price, exit_reason = exit_fn(
                 usable, entry_idx, direction, entry_price,
-                decision.stop_distance, decision.take_profit_distance, max_hold_bars,
+                decision.stop_distance, decision.take_profit_distance, max_hold_bars=max_hold_bars,
             )
 
             gross_return = direction * (exit_price - entry_price) / entry_price
