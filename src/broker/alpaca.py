@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import AsyncIterator, Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -417,6 +418,77 @@ class AlpacaBroker(BrokerAdapter):
 
     async def cancel_order(self, broker_order_id: str) -> None:
         await self._request(self._trading_client, "DELETE", f"/orders/{broker_order_id}")
+
+    async def _find_crypto_stop_order(self, instrument: str) -> dict[str, Any] | None:
+        """The live protective stop_limit order for a crypto instrument, if
+        any — shared by modify_stop_loss() and get_crypto_stop_price()
+        below, so there's exactly one place that knows how to find it."""
+        open_orders = await self._request(
+            self._trading_client, "GET", "/orders",
+            params={"status": "open", "symbols": instrument},
+        )
+        return next(
+            (o for o in open_orders if o.get("type") == "stop_limit" and o.get("symbol") == instrument),
+            None,
+        )
+
+    async def get_crypto_stop_price(self, instrument: str) -> float | None:
+        """The CURRENT live stop price for a crypto position, straight from
+        the broker — no local copy is kept (see src/execution/
+        trailing_stop.py's module docstring on why). Used by Phase D2's
+        per-cycle trailing-stop step to decide whether ratcheting is
+        warranted before ever calling modify_stop_loss. None if there's no
+        live stop order for this instrument."""
+        order = await self._find_crypto_stop_order(instrument)
+        return float(order["stop_price"]) if order else None
+
+    async def modify_stop_loss(self, instrument: str, new_stop_price: float) -> None:
+        """Phase D2 (trailing stops) — crypto only. Equities are NOT
+        supported: canceling one leg of a bracket order cancels the WHOLE
+        bracket (parent + both legs, verified live) — a cancel-and-replace
+        stop update on an equity would destroy the take-profit leg too and
+        risk leaving a filled position briefly unprotected on both sides,
+        not just one. The caller must not invoke this for equities; this
+        raise is a defensive backstop, not the primary guard.
+
+        Real, disclosed limitation even for crypto: Alpaca has no atomic
+        "replace this order" endpoint (unlike OANDA's trade dependent-
+        orders endpoint — see OandaBroker.modify_stop_loss), and the new
+        stop can't be placed before the old one is cancelled (the position's
+        qty is reserved against the existing stop order, so a second stop
+        for the same qty would be rejected as insufficient balance) — so
+        there is a brief window between cancel and re-place where this
+        position has no live protective order at the broker. Kept as short
+        as possible (two sequential calls, no polling/delay in between),
+        but it is real, not eliminated."""
+        if asset_class_for(instrument) != "crypto":
+            raise NotImplementedError(
+                f"modify_stop_loss is not supported for Alpaca equities ({instrument}) — "
+                "see this method's docstring: canceling one leg of a bracket cancels the whole bracket."
+            )
+
+        stop_order = await self._find_crypto_stop_order(instrument)
+        if stop_order is None:
+            logger.warning(
+                "modify_stop_loss: no live stop_limit order found for %s — nothing to move", instrument
+            )
+            return
+
+        qty = stop_order["qty"]
+        side = stop_order["side"]
+        limit_buffer = new_stop_price * 0.01
+        new_limit_price = new_stop_price - limit_buffer if side == "sell" else new_stop_price + limit_buffer
+
+        await self.cancel_order(stop_order["id"])
+        await self._request(
+            self._trading_client, "POST", "/orders",
+            json={
+                "symbol": instrument, "qty": str(qty), "side": side,
+                "type": "stop_limit", "time_in_force": "gtc",
+                "stop_price": f"{new_stop_price:.2f}", "limit_price": f"{new_limit_price:.2f}",
+                "client_order_id": f"{instrument.replace('/', '')}-trail-{uuid.uuid4().hex[:8]}",
+            },
+        )
 
     async def get_order(self, broker_order_id: str) -> dict[str, Any]:
         """Single-order fetch — unlike transactions()'s bulk closed-orders

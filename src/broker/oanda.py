@@ -319,6 +319,37 @@ class OandaBroker(BrokerAdapter):
         data = await self._request("GET", f"/v3/accounts/{account_id}/openPositions")
         return data.get("positions", [])
 
+    async def open_trades(self) -> list[dict[str, Any]]:
+        """Per-TRADE open state (id, instrument, currentUnits, entry price,
+        stopLossOrder/takeProfitOrder each with their own id+price) — distinct
+        from positions() above, which is OANDA's PER-INSTRUMENT aggregate
+        (long/short units summed across every trade on that instrument).
+        Phase D2's trailing-stop step needs this: modifying a stop operates
+        on one specific trade, not a position aggregate, and this is also
+        this system's only source of truth for a trade's CURRENT stop price
+        (no local copy is kept — see src/execution/trailing_stop.py's
+        module docstring on why)."""
+        account_id = await self.resolve_account_id()
+        data = await self._request("GET", f"/v3/accounts/{account_id}/openTrades")
+        return data.get("trades", [])
+
+    async def modify_stop_loss(self, trade_id: str, instrument: str, new_stop_price: float) -> None:
+        """Replaces a trade's stop-loss dependent order in place via OANDA's
+        own "Set Dependent Orders" endpoint — atomic server-side (the old
+        stop is gone and the new one live in a single request), so there is
+        no window where the trade is unprotected, unlike a cancel-then-
+        replace approach. `instrument` is needed only to look up this
+        instrument's own decimal precision for _format_price (verified live
+        2026-08-13: this varies per instrument, see that method's own
+        docstring)."""
+        account_id = await self.resolve_account_id()
+        price_str = await self._format_price(instrument, new_stop_price)
+        await self._request(
+            "PUT",
+            f"/v3/accounts/{account_id}/trades/{trade_id}/orders",
+            json={"stopLoss": {"price": price_str}},
+        )
+
     async def transactions(self, since_id: str | None = None) -> list[dict[str, Any]]:
         """Full transaction objects, not the paginated summary. Verified
         live (2026-08-13): the bare `GET /transactions` endpoint returns
