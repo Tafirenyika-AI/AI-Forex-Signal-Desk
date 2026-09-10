@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 
 from sqlalchemy import (
@@ -737,6 +738,7 @@ promotion_gate_snapshots = Table(
 )
 
 
+@functools.lru_cache(maxsize=None)
 def get_engine(db_path):
     """Every DB access in this project goes through this one function (21
     call sites, all passing settings.db_path) — so a shared remote database
@@ -746,6 +748,20 @@ def get_engine(db_path):
     path. Set means every process — local scheduled tasks and any
     cloud-hosted dashboard — reads/writes the identical live remote
     database instead.
+
+    Memoized per db_path (real perf bug found live 2026-09-09): every call
+    used to build a brand-new Engine (discarding its connection pool) AND
+    re-run metadata.create_all(), which — with the schema now at 36 tables
+    — issues a real has_table() network round-trip per table against the
+    remote Postgres on EVERY single call, not just the first. That's ~36
+    round-trips paid repeatedly by every process (dashboard cold-cache
+    renders, every scheduled cycle, every script), compounding as the
+    schema has grown table-by-table across this project. db_path is a
+    fixed constant per process (see config.py — always ROOT_DIR/data/
+    forex.db regardless of DATABASE_URL being set), so caching on it is
+    exactly "one engine per process," the standard SQLAlchemy lifecycle —
+    not a behavior change for any of the 21 callers, all of which already
+    expected a working engine back, never specifically a fresh one.
 
     Originally built against Turso/libSQL (SQLite-compatible, smallest
     conceptual change), but sqlalchemy-libsql hard-depends on
