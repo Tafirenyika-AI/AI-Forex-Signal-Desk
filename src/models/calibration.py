@@ -46,7 +46,7 @@ class CalibrationReport:
     bins: list[CalibrationBin]
 
 
-def _fetch_scored_signals(engine: Engine, source: str) -> list[dict]:
+def fetch_scored_signals(engine: Engine, source: str) -> list[dict]:
     with engine.connect() as conn:
         rows = conn.execute(
             select(
@@ -86,8 +86,19 @@ def _reliability_bins(rows: list[dict], n_bins: int = N_BINS) -> list[Calibratio
 
 
 def calibration_report(engine: Engine, source: str, *, instrument: str | None = None,
-                        horizon: str | None = None, regime: str | None = None) -> CalibrationReport | None:
-    rows = _fetch_scored_signals(engine, source)
+                        horizon: str | None = None, regime: str | None = None,
+                        rows: list[dict] | None = None) -> CalibrationReport | None:
+    """rows: pass already-fetched fetch_scored_signals() output to filter
+    in memory instead of re-querying — real N+1 bug found live 2026-09-09:
+    all_reports() was calling this once per instrument/horizon/regime
+    segment (~78 calls for this account's real data), each silently
+    re-running the same expensive signal_evaluations x trade_intents join
+    over the network from scratch. Omit (None, the default) for a single
+    standalone call, which still does its own one-off fetch exactly as
+    before — this is purely additive, not a behavior change for existing
+    single-shot callers (e.g. src/evaluation/promotion_gates.py)."""
+    if rows is None:
+        rows = fetch_scored_signals(engine, source)
     if instrument is not None:
         rows = [r for r in rows if r["instrument"] == instrument]
     if horizon is not None:
@@ -107,24 +118,31 @@ def calibration_report(engine: Engine, source: str, *, instrument: str | None = 
 def all_reports(engine: Engine, source: str) -> list[CalibrationReport]:
     """Aggregate report plus every pair/horizon/regime segment that clears
     MIN_SEGMENT_SAMPLES on its own — spec: "calibrate separately by pair,
-    holding period and market regime where sample size permits." """
-    rows = _fetch_scored_signals(engine, source)
+    holding period and market regime where sample size permits."
+
+    Fetches once and reuses in memory for every segment (real N+1 bug
+    found live 2026-09-09 — see calibration_report's own docstring): this
+    used to call calibration_report once per instrument/horizon/regime,
+    each silently re-running the same expensive join query from scratch
+    (~78 total re-fetches for this account's real data, the dominant cost
+    behind tests/test_dashboard_smoke.py's 120s+ timeouts)."""
+    rows = fetch_scored_signals(engine, source)
     reports = []
 
-    aggregate = calibration_report(engine, source)
+    aggregate = calibration_report(engine, source, rows=rows)
     if aggregate:
         reports.append(aggregate)
 
     for instrument in sorted({r["instrument"] for r in rows}):
-        r = calibration_report(engine, source, instrument=instrument)
+        r = calibration_report(engine, source, instrument=instrument, rows=rows)
         if r:
             reports.append(r)
     for horizon in sorted({r["horizon"] for r in rows}):
-        r = calibration_report(engine, source, horizon=horizon)
+        r = calibration_report(engine, source, horizon=horizon, rows=rows)
         if r:
             reports.append(r)
     for regime in sorted({r["regime"] for r in rows if r["regime"]}):
-        r = calibration_report(engine, source, regime=regime)
+        r = calibration_report(engine, source, regime=regime, rows=rows)
         if r:
             reports.append(r)
 

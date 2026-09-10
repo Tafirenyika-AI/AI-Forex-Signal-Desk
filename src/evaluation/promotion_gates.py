@@ -40,7 +40,7 @@ from sqlalchemy.engine import Engine
 from src.data.db import orders_fills as orders_fills_table
 from src.data.db import risk_decisions as risk_decisions_table
 from src.data.db import trade_outcomes as trade_outcomes_table
-from src.models.calibration import calibration_report
+from src.models.calibration import calibration_report, fetch_scored_signals
 
 # Same MIN_SAMPLES floor as everywhere else in this project (meta-model,
 # challenger evaluation) — below this, a metric is reported as "not enough
@@ -171,9 +171,12 @@ def _calibration_criterion(engine: Engine) -> GateCriterion:
 
 def _regime_stability_criterion(engine: Engine) -> GateCriterion:
     from src.models.regime import REGIME_TREND, REGIME_RANGE, REGIME_HIGH_VOL
+    # Fetch once, reuse for all 3 regime checks (same N+1 fix as
+    # calibration.all_reports — see calibration_report's own docstring).
+    rows = fetch_scored_signals(engine, "champion")
     regimes_with_signal = [
         r for r in (REGIME_TREND, REGIME_RANGE, REGIME_HIGH_VOL)
-        if calibration_report(engine, "champion", regime=r) is not None
+        if calibration_report(engine, "champion", regime=r, rows=rows) is not None
     ]
     passed = len(regimes_with_signal) >= 2 if regimes_with_signal else None
     return GateCriterion(
