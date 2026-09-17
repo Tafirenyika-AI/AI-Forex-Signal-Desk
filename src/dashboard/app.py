@@ -74,7 +74,7 @@ from src.knowledge.retrieval import search as knowledge_search
 from src.models.calibration import MIN_SEGMENT_SAMPLES as calibration_MIN_SEGMENT_SAMPLES
 from src.models.calibration import all_reports as calibration_all_reports
 from src.models.currency_strength import compute_all_currency_strengths
-from src.models.train_meta_model import MIN_SAMPLES, MODEL_NAME, load_linked_features
+from src.models.train_meta_model import AUTO_DEPLOY_MIN_ACCURACY, MIN_SAMPLES, MODEL_NAME, load_linked_features
 from src.models.track_record import all_track_records
 from src.models.trading_sessions import current_session_state
 from src.risk import governor as risk_governor
@@ -1782,9 +1782,13 @@ with tab_learning:
         st.info(
             "No meta-model has been deployed yet — decisions are still made by the "
             "fixed-weight heuristic blend in `decision/fusion.py`. A candidate trains "
-            "automatically every night at 3am once there's enough data, but is "
-            "**never auto-deployed** — review it and promote manually with "
-            "`python -m src.models.promote_meta_model <version>` if the accuracy looks trustworthy."
+            "automatically every night at 3am once there's enough data, and "
+            "**auto-deploys** if its cross-validated accuracy clears a basic "
+            f"{AUTO_DEPLOY_MIN_ACCURACY:.0%} floor (better than a coin flip) — no "
+            "manual step needed for that case. If a candidate exists below but isn't "
+            "deployed, it missed that floor; promote it by hand anyway with "
+            "`python -m src.models.promote_meta_model <version>` if you've reviewed it "
+            "and want it live regardless."
         )
 
     if versions:

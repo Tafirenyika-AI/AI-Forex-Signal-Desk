@@ -1,5 +1,8 @@
-"""Deploying a trained meta-model is a deliberate human decision, not an
-automatic step after training — this script is that decision point.
+"""Manual override for meta-model deployment. src.models.train_meta_model
+auto-deploys a fresh candidate on its own when it clears a basic accuracy
+floor (user-requested 2026-09-16) — this script is for the two cases that
+doesn't cover: a candidate that missed the floor but you want live anyway
+after reviewing it by hand, or rolling back to an older version.
 
     python -m src.models.promote_meta_model --list
     python -m src.models.promote_meta_model <version>

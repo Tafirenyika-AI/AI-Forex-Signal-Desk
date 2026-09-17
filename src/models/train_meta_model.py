@@ -10,6 +10,15 @@ Refuses to train below MIN_SAMPLES (overfitting risk on a handful of
 trades is worse than staying with the honest heuristic) and reports
 cross-validated accuracy, not training accuracy — with this few samples,
 training accuracy is close to meaningless.
+
+Auto-deploys on success (user-requested 2026-09-16 — previously this
+required a manual review-then-promote step every time; see
+AUTO_DEPLOY_MIN_ACCURACY's own comment for the one sanity floor kept).
+Run this nightly (already scheduled) to let the model retrain and
+redeploy itself as more real outcomes accumulate. src.models.
+promote_meta_model still exists for the case a candidate misses the
+auto-deploy floor but you want it live anyway, or to roll back to an
+older version.
 """
 from __future__ import annotations
 
@@ -22,7 +31,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.engine import Engine
 
 from src.data.db import model_registry as model_registry_table
@@ -34,6 +43,16 @@ MIN_SAMPLES = 30
 COMPONENTS = ["price", "macro", "cross_market", "news"]
 MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "models"
 MODEL_NAME = "meta_model"
+
+# User-requested 2026-09-16: auto-deploy a freshly trained candidate
+# instead of requiring a manual src.models.promote_meta_model review every
+# time. One sanity floor kept even so — a candidate that trains
+# successfully but scores at or below chance (0.5) would actively make
+# live decisions worse than the fixed heuristic it's replacing, not just
+# "not better yet." Below this floor it's still saved to model_registry
+# (deployed=False) and reviewable/promotable by hand, same as before;
+# only the "looks fine, ship it" case skips the manual step now.
+AUTO_DEPLOY_MIN_ACCURACY = 0.5
 
 
 def load_linked_features(engine: Engine) -> pd.DataFrame:
@@ -135,6 +154,7 @@ def train(engine: Engine) -> dict | None:
         "class_balance": {"win": int(y.sum()), "loss": int(len(y) - y.sum())},
     }
 
+    auto_deploy = cv_scores.mean() > AUTO_DEPLOY_MIN_ACCURACY
     with engine.begin() as conn:
         conn.execute(
             insert(model_registry_table).values(
@@ -144,16 +164,33 @@ def train(engine: Engine) -> dict | None:
                 train_start=None,
                 train_end=None,
                 validation_json=json.dumps(validation),
-                deployed=False,  # promoted separately, deliberately — see module docstring
+                deployed=auto_deploy,
             )
         )
+        if auto_deploy:
+            # Demote any previously deployed version — deployed is a
+            # single-current-version flag, not a set (same invariant
+            # promote_meta_model.deploy() enforces for the manual path).
+            conn.execute(
+                update(model_registry_table)
+                .where(model_registry_table.c.name == MODEL_NAME)
+                .where(model_registry_table.c.version != version)
+                .values(deployed=False)
+            )
 
     print(f"Trained meta-model v{version} on {len(df)} samples.")
     print(f"  Cross-validated accuracy: {cv_scores.mean():.1%} (+/- {cv_scores.std():.1%}, {cv_folds}-fold)")
     print(f"  Class balance: {validation['class_balance']}")
     print(f"  Saved to {model_path}")
-    print(f"  NOT auto-deployed — inspect validation, then promote via "
-          f"src.models.promote_meta_model if it looks trustworthy.")
+    if auto_deploy:
+        print(f"  AUTO-DEPLOYED (cv accuracy {cv_scores.mean():.1%} > "
+              f"{AUTO_DEPLOY_MIN_ACCURACY:.0%} floor) — run_loop.py will pick "
+              f"this up on its next cycle.")
+    else:
+        print(f"  NOT auto-deployed: cv accuracy {cv_scores.mean():.1%} does not clear the "
+              f"{AUTO_DEPLOY_MIN_ACCURACY:.0%} floor (no better than a coin flip). Still saved "
+              f"and reviewable — promote by hand via src.models.promote_meta_model if you "
+              f"want it live anyway.")
     return validation
 
 
