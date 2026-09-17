@@ -74,7 +74,7 @@ from src.knowledge.retrieval import search as knowledge_search
 from src.models.calibration import MIN_SEGMENT_SAMPLES as calibration_MIN_SEGMENT_SAMPLES
 from src.models.calibration import all_reports as calibration_all_reports
 from src.models.currency_strength import compute_all_currency_strengths
-from src.models.train_meta_model import MIN_SAMPLES, MODEL_NAME
+from src.models.train_meta_model import MIN_SAMPLES, MODEL_NAME, load_linked_features
 from src.models.track_record import all_track_records
 from src.models.trading_sessions import current_session_state
 from src.risk import governor as risk_governor
@@ -1739,11 +1739,18 @@ with tab_learning:
         # reason as calibration/challenger evaluation. Showing only this
         # user's own count here would be misleading about what actually
         # gates training.
-        n_linked_outcomes = conn.execute(
-            select(func.count()).select_from(trade_outcomes_table)
-            .where(trade_outcomes_table.c.trade_intent_id.is_not(None))
-            .where(trade_outcomes_table.c.outcome.in_(["WIN", "LOSS"]))
-        ).scalar()
+        #
+        # Real gap found live 2026-09-16: this used to be its own looser
+        # COUNT(*) (any broker, no check that a cycle logged all 4
+        # components) — it showed "30/30 ready" on a page whose whole
+        # point is being the honest answer, while the actual training gate
+        # (load_linked_features, same function train() uses) was really at
+        # 29/30 because one of the 30 was an Alpaca outcome (macro/news/
+        # cross_market are trivially zero for non-forex, so train()
+        # correctly excludes it — see that module's own docstring). Now
+        # calls the exact same function the real gate uses, so this number
+        # can't drift from what actually happens at 3am.
+        n_linked_outcomes = len(load_linked_features(engine))
         versions = conn.execute(
             select(model_registry_table)
             .where(model_registry_table.c.name == MODEL_NAME)

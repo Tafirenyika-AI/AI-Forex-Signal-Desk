@@ -36,7 +36,7 @@ MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "models"
 MODEL_NAME = "meta_model"
 
 
-def _load_linked_features(engine: Engine) -> pd.DataFrame:
+def load_linked_features(engine: Engine) -> pd.DataFrame:
     """Rebuilds the (instrument, horizon, time) key for each outcome's
     trade_intent, pulls that cycle's four component predictions, and
     expresses each component's score as *agreement with the direction
@@ -97,7 +97,7 @@ def _load_linked_features(engine: Engine) -> pd.DataFrame:
 
 
 def train(engine: Engine) -> dict | None:
-    df = _load_linked_features(engine)
+    df = load_linked_features(engine)
     if len(df) < MIN_SAMPLES:
         print(f"Only {len(df)} linked WIN/LOSS outcomes available (need {MIN_SAMPLES}+). "
               f"Staying with the fixed-weight heuristic in decision/fusion.py until more accumulate.")
