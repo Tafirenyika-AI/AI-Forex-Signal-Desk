@@ -87,47 +87,52 @@ st.set_page_config(
 )
 
 # ============================================================== design system
-# Colors follow the dataviz skill's validated reference palette
-# (references/palette.md): categorical slot 1 (blue) for neutral series,
-# the fixed status set for WIN/LOSS/BREAKEVEN, "success text" tokens where
-# text needs stronger contrast than a filled status mark. Light/dark both
-# declared; @media follows the OS/browser preference since Streamlit's own
-# theme toggle isn't exposed to injected CSS.
+# Cyberpunk/neon HUD theme (user-requested full redesign, 2026-09-17,
+# replacing the earlier light/dark-adaptive business-dashboard look).
+# Deliberately always-dark, no @media prefers-color-scheme split — a
+# glowing neon aesthetic has no coherent "light mode" twin, unlike the
+# previous theme, so there's exactly one surface to keep in sync now.
+#
+# Colors are split into two validated tiers, per the dataviz skill's own
+# categorical lightness-band rule (OKLCH L ~0.48-0.67 in dark mode) — pure
+# bright neon fails that band for actual DATA marks (verified: e.g.
+# #00d4ff sits at L=0.80, well outside it), so:
+#   - TEXT/glow tier (--af-good-text etc.): bright neon, used for text,
+#     glow effects, badges, buttons — validated via WCAG text contrast
+#     (worst case, bad_text, 6.36:1 against the page surface, well over
+#     the 4.5:1 floor).
+#   - CHART tier (--af-chart-forex/equity/crypto): toned to sit inside the
+#     validated categorical band, used only for actual Plotly data marks —
+#     `node scripts/validate_palette.js "#0097b2,#c96a2e,#00a878" --mode
+#     dark --surface "#070a12"` → ALL CHECKS PASS (lightness band, chroma
+#     floor, adjacent CVD ΔE 8.7, normal-vision ΔE 23.5, contrast >=3:1).
 DESIGN_CSS = """
 <style>
-:root {
-  --af-surface: #fcfcfb;
-  --af-page: #f9f9f7;
-  --af-ink: #0b0b0b;
-  --af-ink-secondary: #52514e;
-  --af-ink-muted: #898781;
-  --af-border: rgba(11,11,11,0.10);
-  --af-good-text: #006300;
-  --af-good-bg: rgba(12,163,12,0.12);
-  --af-bad-text: #c73c3b;
-  --af-bad-bg: rgba(227,73,72,0.12);
-  --af-neutral-text: #898781;
-  --af-neutral-bg: rgba(137,135,129,0.14);
-  --af-accent: #2a78d6;
-  --af-accent-bg: rgba(42,120,214,0.10);
-  /* Asset-class identity colors (forex/equity/crypto) — slots 1-3 of the
-     dataviz skill's validated categorical theme (references/palette.md),
-     the same theme --af-accent above already draws slot 1 from. These
-     three specifically validate all-pairs CVD/normal-vision separation in
-     both light and dark, which matters here since all three can appear
-     adjacent in the same badge row/legend. */
-  --af-equity: #eb6834;
-  --af-equity-bg: rgba(235,104,52,0.12);
-  --af-crypto: #1baf7a;
-  --af-crypto-bg: rgba(27,175,122,0.12);
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Share+Tech+Mono&display=swap');
 
-  /* Token scale (added for the platform redesign) — spacing/radius/shadow/
-     type steps, extending the roles above rather than replacing them. Most
-     existing rules below snap onto these exactly (they were reverse-picked
-     from what was already hardcoded); a few bespoke sizes (hero stat value,
-     small pill badge padding) intentionally stay literal rather than being
-     forced onto a step they don't fit — same "hero figure is special-cased"
-     principle the dataviz skill itself uses. */
+:root {
+  --af-page: #05070d;
+  --af-surface: rgba(13,20,32,0.72);
+  --af-surface-solid: #0d1420;
+  --af-ink: #eaf6ff;
+  --af-ink-secondary: #8fa8c4;
+  --af-ink-muted: #54677f;
+  --af-border: rgba(76,224,255,0.28);
+  --af-border-bright: rgba(76,224,255,0.7);
+
+  --af-good-text: #39ff8f;
+  --af-good-bg: rgba(57,255,143,0.12);
+  --af-bad-text: #ff5470;
+  --af-bad-bg: rgba(255,84,112,0.12);
+  --af-neutral-text: #8fa8c4;
+  --af-neutral-bg: rgba(143,168,196,0.12);
+  --af-accent: #4ce0ff;
+  --af-accent-bg: rgba(76,224,255,0.12);
+  --af-equity: #ffab47;
+  --af-equity-bg: rgba(255,171,71,0.12);
+  --af-crypto: #39ffc8;
+  --af-crypto-bg: rgba(57,255,200,0.12);
+
   --af-space-1: 4px;
   --af-space-2: 8px;
   --af-space-3: 12px;
@@ -136,13 +141,13 @@ DESIGN_CSS = """
   --af-space-6: 24px;
   --af-space-8: 32px;
 
-  --af-radius-sm: 8px;
-  --af-radius-md: 14px;
-  --af-radius-lg: 20px;
+  --af-radius-sm: 6px;
+  --af-radius-md: 10px;
+  --af-radius-lg: 16px;
   --af-radius-pill: 999px;
 
-  --af-shadow-1: 0 1px 4px rgba(11,11,11,0.05);
-  --af-shadow-2: 0 2px 10px rgba(11,11,11,0.08);
+  --af-shadow-1: 0 0 0 1px var(--af-border), 0 0 18px rgba(76,224,255,0.08);
+  --af-shadow-2: 0 0 0 1px var(--af-border-bright), 0 0 28px rgba(76,224,255,0.18);
 
   --af-text-xs: 0.74rem;
   --af-text-sm: 0.84rem;
@@ -151,46 +156,84 @@ DESIGN_CSS = """
   --af-text-xl: 1.35rem;
   --af-text-2xl: 1.9rem;
 
-  /* Chart tokens: fixed light, deliberately NOT inside the dark media query
-     below. Plotly figures are rendered server-side in Python and can't
-     detect the browser's prefers-color-scheme the way this CSS can, so
-     every chart added for the redesign renders against one constant light
-     surface (see CHART_COLORS below) regardless of card/page dark mode —
-     an accepted tradeoff, not a bug. Declared here too so any pure-CSS
-     chart-adjacent element (e.g. a meter track) stays visually consistent
-     with the Plotly figures sitting next to it. */
-  --af-chart-surface: #fcfcfb;
-  --af-chart-grid: #e1e0d9;
-  --af-chart-axis: #c3c2b7;
-  --af-chart-ink: #0b0b0b;
-  --af-chart-ink-secondary: #52514e;
-  --af-chart-ink-muted: #898781;
+  /* Chart-mark tier — see module note above. Fixed (Plotly figures render
+     server-side and can't react to CSS), always the dark cyberpunk surface
+     now that there's only one theme. */
+  --af-chart-surface: #070a12;
+  --af-chart-grid: #1a2740;
+  --af-chart-axis: #2e4460;
+  --af-chart-ink: #eaf6ff;
+  --af-chart-ink-secondary: #8fa8c4;
+  --af-chart-ink-muted: #54677f;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --af-surface: #1a1a19;
-    --af-page: #0d0d0d;
-    --af-ink: #ffffff;
-    --af-ink-secondary: #c3c2b7;
-    --af-ink-muted: #898781;
-    --af-border: rgba(255,255,255,0.10);
-    --af-good-text: #2ecc2e;
-    --af-good-bg: rgba(12,163,12,0.18);
-    --af-bad-text: #e66767;
-    --af-bad-bg: rgba(230,103,103,0.18);
-    --af-neutral-text: #a3a19a;
-    --af-neutral-bg: rgba(137,135,129,0.18);
-    --af-accent: #3987e5;
-    --af-accent-bg: rgba(57,135,229,0.14);
-    --af-equity: #d95926;
-    --af-equity-bg: rgba(217,89,38,0.16);
-    --af-crypto: #199e70;
-    --af-crypto-bg: rgba(25,158,112,0.16);
-  }
+
+html, body, .stApp {
+  background: var(--af-page) !important;
+  color: var(--af-ink);
+  font-family: 'Share Tech Mono', monospace;
 }
+.stApp {
+  background-image:
+    repeating-linear-gradient(0deg, rgba(76,224,255,0.035) 0px, rgba(76,224,255,0.035) 1px, transparent 1px, transparent 3px),
+    linear-gradient(180deg, rgba(76,224,255,0.05), transparent 300px),
+    radial-gradient(ellipse at top, rgba(76,224,255,0.08), transparent 60%);
+  background-attachment: fixed;
+}
+[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #070a12, #05070d);
+  border-right: 1px solid var(--af-border);
+}
+[data-testid="stHeader"] { background: transparent; }
+h1, h2, h3, h4 { font-family: 'Orbitron', 'Share Tech Mono', monospace !important; color: var(--af-ink); }
+p, span, div, label { color: var(--af-ink); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--af-page); }
+::-webkit-scrollbar-thumb { background: rgba(76,224,255,0.35); border-radius: var(--af-radius-pill); }
+::-webkit-scrollbar-thumb:hover { background: rgba(76,224,255,0.6); }
+
+.stButton > button {
+  background: rgba(76,224,255,0.08);
+  color: var(--af-accent);
+  border: 1px solid var(--af-border-bright);
+  border-radius: var(--af-radius-sm);
+  font-family: 'Share Tech Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  transition: box-shadow 0.15s ease, background 0.15s ease;
+}
+.stButton > button:hover {
+  background: rgba(76,224,255,0.18);
+  box-shadow: 0 0 16px rgba(76,224,255,0.45);
+  color: #ffffff;
+}
+[data-testid="stProgress"] > div > div > div > div { background: var(--af-accent) !important; box-shadow: 0 0 10px var(--af-accent); }
+[data-testid="stMetricValue"] { color: var(--af-ink); font-family: 'Share Tech Mono', monospace; }
+[data-baseweb="tab-list"] { border-bottom: 1px solid var(--af-border); }
+[data-baseweb="tab"] { font-family: 'Share Tech Mono', monospace; text-transform: uppercase; letter-spacing: 0.04em; color: var(--af-ink-secondary); }
+[aria-selected="true"][data-baseweb="tab"] { color: var(--af-accent) !important; text-shadow: 0 0 8px rgba(76,224,255,0.6); }
+[data-baseweb="tab-highlight"] { background-color: var(--af-accent) !important; box-shadow: 0 0 8px var(--af-accent); }
+[data-testid="stForm"] {
+  border: 1px solid var(--af-border) !important;
+  border-radius: var(--af-radius-md);
+  background: var(--af-surface);
+  backdrop-filter: blur(6px);
+  box-shadow: var(--af-shadow-1);
+}
+[data-testid="stTextInputRootElement"] {
+  border: 1px solid var(--af-border) !important;
+  border-radius: var(--af-radius-sm);
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+[data-testid="stTextInputRootElement"]:focus-within {
+  border-color: var(--af-border-bright) !important;
+  box-shadow: 0 0 12px rgba(76,224,255,0.35);
+}
+a, a:visited { color: var(--af-accent) !important; }
+img { border-radius: var(--af-radius-md); box-shadow: 0 0 20px rgba(76,224,255,0.2); }
+
 .af-stat-tile {
   background: var(--af-surface);
-  border: 1px solid var(--af-border);
+  backdrop-filter: blur(6px);
   border-radius: var(--af-radius-md);
   padding: var(--af-space-4) var(--af-space-5);
   box-shadow: var(--af-shadow-1);
@@ -200,7 +243,7 @@ DESIGN_CSS = """
   font-size: var(--af-text-xs);
   color: var(--af-ink-muted);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.1em;
   font-weight: 600;
   margin-bottom: var(--af-space-1);
 }
@@ -210,9 +253,10 @@ DESIGN_CSS = """
   color: var(--af-ink);
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
+  text-shadow: 0 0 12px rgba(234,246,255,0.25);
 }
-.af-stat-value.positive { color: var(--af-good-text); }
-.af-stat-value.negative { color: var(--af-bad-text); }
+.af-stat-value.positive { color: var(--af-good-text); text-shadow: 0 0 12px rgba(57,255,143,0.5); }
+.af-stat-value.negative { color: var(--af-bad-text); text-shadow: 0 0 12px rgba(255,84,112,0.5); }
 .af-stat-sub {
   font-size: var(--af-text-sm);
   color: var(--af-ink-secondary);
@@ -224,22 +268,26 @@ DESIGN_CSS = """
   border-radius: var(--af-radius-pill);
   font-size: var(--af-text-xs);
   font-weight: 700;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
   vertical-align: middle;
+  border: 1px solid currentColor;
 }
-.af-badge-win { color: var(--af-good-text); background: var(--af-good-bg); }
-.af-badge-loss { color: var(--af-bad-text); background: var(--af-bad-bg); }
+.af-badge-win { color: var(--af-good-text); background: var(--af-good-bg); text-shadow: 0 0 6px currentColor; }
+.af-badge-loss { color: var(--af-bad-text); background: var(--af-bad-bg); text-shadow: 0 0 6px currentColor; }
 .af-badge-neutral { color: var(--af-neutral-text); background: var(--af-neutral-bg); }
-.af-badge-forex { color: var(--af-accent); background: var(--af-accent-bg); }
-.af-badge-equity { color: var(--af-equity); background: var(--af-equity-bg); }
-.af-badge-crypto { color: var(--af-crypto); background: var(--af-crypto-bg); }
+.af-badge-forex { color: var(--af-accent); background: var(--af-accent-bg); text-shadow: 0 0 6px currentColor; }
+.af-badge-equity { color: var(--af-equity); background: var(--af-equity-bg); text-shadow: 0 0 6px currentColor; }
+.af-badge-crypto { color: var(--af-crypto); background: var(--af-crypto-bg); text-shadow: 0 0 6px currentColor; }
 .af-trade-card {
   border: 1px solid var(--af-border);
   border-radius: var(--af-radius-md);
   padding: 14px var(--af-space-5);
   margin-bottom: var(--af-space-2);
   background: var(--af-surface);
+  backdrop-filter: blur(6px);
+  transition: box-shadow 0.15s ease;
 }
+.af-trade-card:hover { box-shadow: var(--af-shadow-2); }
 .af-trade-row {
   display: flex;
   justify-content: space-between;
@@ -251,6 +299,7 @@ DESIGN_CSS = """
   font-size: var(--af-text-lg);
   font-weight: 700;
   color: var(--af-ink);
+  font-family: 'Orbitron', monospace;
 }
 .af-pl-value {
   font-size: 1.15rem;
@@ -262,6 +311,10 @@ DESIGN_CSS = """
   font-weight: 800;
   color: var(--af-ink);
   margin-bottom: 0;
+  font-family: 'Orbitron', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 18px rgba(76,224,255,0.55), 0 0 40px rgba(76,224,255,0.25);
 }
 .af-header-tagline {
   color: var(--af-ink-secondary);
@@ -277,10 +330,11 @@ DESIGN_CSS = """
   letter-spacing: 0.03em;
   color: var(--af-accent);
   background: var(--af-accent-bg);
+  border: 1px solid var(--af-border-bright);
 }
 .af-section-card {
   background: var(--af-surface);
-  border: 1px solid var(--af-border);
+  backdrop-filter: blur(6px);
   border-radius: var(--af-radius-md);
   padding: var(--af-space-1) var(--af-space-1) 14px var(--af-space-1);
   box-shadow: var(--af-shadow-1);
@@ -300,26 +354,37 @@ DESIGN_CSS = """
 st.markdown(DESIGN_CSS, unsafe_allow_html=True)
 
 # Plotly figures are rendered server-side in Python, so they can't read the
-# --af-chart-* CSS custom properties above (or react to prefers-color-scheme)
-# — this dict is the Python-side mirror every chart function must build
-# against, kept in sync with the :root chart tokens by hand. Also includes
-# the dataviz skill's validated status/diverging colors (references/
-# palette.md) for win/loss and signed-score charts.
+# --af-chart-* CSS custom properties above — this dict is the Python-side
+# mirror every chart function must build against, kept in sync with the
+# :root chart tokens by hand. Now the sole theme (no light/dark split to
+# track — see DESIGN_CSS's own note on why the cyberpunk redesign dropped
+# the @media split entirely).
+#
+# These are toned down from the bright neon text/badge tier above:
+# actual chart data marks (lines/bars/fills) need to sit in the dataviz
+# skill's validated categorical lightness band (OKLCH L ~0.48-0.67 dark),
+# which pure bright neon fails — validated live:
+#   node scripts/validate_palette.js "#0097b2,#c96a2e,#00a878" --mode dark
+#   --surface "#070a12" → ALL CHECKS PASS (band, chroma floor, adjacent
+#   CVD ΔE 8.7, normal-vision ΔE 23.5, contrast >=3:1 vs surface).
+# "accent"/"diverging_pos" reuse that categorical slot-1 cyan; good/
+# warning/serious/critical are separate reserved status steps at the same
+# lightness discipline (contrast vs surface: 6.48/7.68/5.26/4.34 : 1).
 CHART_COLORS = {
-    "surface": "#fcfcfb",
-    "grid": "#e1e0d9",
-    "axis": "#c3c2b7",
-    "ink": "#0b0b0b",
-    "ink_secondary": "#52514e",
-    "ink_muted": "#898781",
-    "good": "#0ca30c",
-    "warning": "#fab219",
-    "serious": "#ec835a",
-    "critical": "#d03b3b",
-    "diverging_pos": "#2a78d6",
-    "diverging_neg": "#e34948",
-    "diverging_mid": "#f0efec",
-    "accent": "#2a78d6",
+    "surface": "#070a12",
+    "grid": "#1a2740",
+    "axis": "#2e4460",
+    "ink": "#eaf6ff",
+    "ink_secondary": "#8fa8c4",
+    "ink_muted": "#54677f",
+    "good": "#00a878",
+    "warning": "#c99a2e",
+    "serious": "#c96a2e",
+    "critical": "#c94a5a",
+    "diverging_pos": "#0097b2",
+    "diverging_neg": "#c94a5a",
+    "diverging_mid": "#3a4d68",
+    "accent": "#0097b2",
 }
 
 
@@ -362,7 +427,7 @@ def format_duration(seconds: float) -> str:
 
 
 def _sparkline_svg(values: list[float], width: int = 64, height: int = 20,
-                    accent: str = "#2a78d6", deemphasis: str = "#c3c2b7") -> str:
+                    accent: str = "#0097b2", deemphasis: str = "#2e4460") -> str:
     """12-point-style sparkline as raw inline SVG (never Plotly) — a full
     Plotly.js instance per stat tile would mean 15+ competing chart inits
     on tabs like Mission Control/Currency Map on every rerun. Matches the
@@ -776,10 +841,10 @@ def equity_curve_figure(df: pd.DataFrame) -> go.Figure:
         go.Scatter(
             x=ordered["closed_at"], y=ordered["cumulative_pl"],
             mode="lines+markers",
-            line=dict(color="#2a78d6", width=2),
-            marker=dict(size=6, color="#2a78d6"),
+            line=dict(color="#0097b2", width=2),
+            marker=dict(size=6, color="#0097b2"),
             fill="tozeroy",
-            fillcolor="rgba(42,120,214,0.10)",
+            fillcolor="rgba(0,151,178,0.15)",
             hovertemplate="%{x|%b %d, %H:%M}<br>Cumulative P&L: $%{y:,.2f}<extra></extra>",
             name="Cumulative P&L",
         )
@@ -789,21 +854,22 @@ def equity_curve_figure(df: pd.DataFrame) -> go.Figure:
         height=260,
         xaxis=dict(showgrid=False, title=None),
         yaxis=dict(
-            showgrid=True, gridcolor="rgba(137,135,129,0.25)", title="Cumulative P&L ($)",
-            zeroline=True, zerolinecolor="rgba(137,135,129,0.5)", zerolinewidth=1,
+            showgrid=True, gridcolor="rgba(46,68,96,0.4)", title="Cumulative P&L ($)",
+            zeroline=True, zerolinecolor="rgba(46,68,96,0.7)", zerolinewidth=1,
         ),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
-        font=dict(color="#898781"),
-        hoverlabel=dict(bgcolor="#1a1a19", font_color="#ffffff"),
+        font=dict(color="#8fa8c4"),
+        hoverlabel=dict(bgcolor="#0d1420", font_color="#eaf6ff"),
     )
     return fig
 
 
 def per_trade_pl_figure(df: pd.DataFrame) -> go.Figure:
     ordered = df.sort_values("closed_at").copy()
-    colors = ["#0ca30c" if v > 0 else ("#d03b3b" if v < 0 else "#898781") for v in ordered["realized_pl_usd"]]
+    colors = [CHART_COLORS["good"] if v > 0 else (CHART_COLORS["critical"] if v < 0 else CHART_COLORS["ink_muted"])
+              for v in ordered["realized_pl_usd"]]
     fig = go.Figure()
     fig.add_trace(
         go.Bar(
@@ -816,12 +882,12 @@ def per_trade_pl_figure(df: pd.DataFrame) -> go.Figure:
         margin=dict(l=10, r=10, t=10, b=10),
         height=220,
         xaxis=dict(showgrid=False, title=None),
-        yaxis=dict(showgrid=True, gridcolor="rgba(137,135,129,0.25)", title="Trade P&L ($)",
-                   zeroline=True, zerolinecolor="rgba(137,135,129,0.5)"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(46,68,96,0.4)", title="Trade P&L ($)",
+                   zeroline=True, zerolinecolor="rgba(46,68,96,0.7)"),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
-        font=dict(color="#898781"),
+        font=dict(color="#8fa8c4"),
     )
     return fig
 
@@ -837,13 +903,13 @@ def reliability_figure(report) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=[0, 1], y=[0, 1], mode="lines",
-        line=dict(color="#c3c2b7", width=1.5, dash="dash"),
+        line=dict(color="#2e4460", width=1.5, dash="dash"),
         hoverinfo="skip", name="Perfect calibration",
     ))
     fig.add_trace(go.Scatter(
         x=xs, y=ys, mode="lines+markers",
-        line=dict(color="#2a78d6", width=2),
-        marker=dict(size=sizes, color="#2a78d6", line=dict(color="#fcfcfb", width=2)),
+        line=dict(color="#0097b2", width=2),
+        marker=dict(size=sizes, color="#0097b2", line=dict(color="#070a12", width=2)),
         customdata=[b.n for b in report.bins],
         hovertemplate="Predicted: %{x:.0%}<br>Observed hit rate: %{y:.0%}<br>n=%{customdata}<extra></extra>",
         name=report.segment,
@@ -852,14 +918,14 @@ def reliability_figure(report) -> go.Figure:
         margin=dict(l=10, r=10, t=10, b=10),
         height=300,
         xaxis=dict(title="Mean predicted confidence", range=[0, 1], tickformat=".0%",
-                   showgrid=True, gridcolor="rgba(137,135,129,0.25)"),
+                   showgrid=True, gridcolor="rgba(46,68,96,0.4)"),
         yaxis=dict(title="Observed hit rate", range=[0, 1], tickformat=".0%",
-                   showgrid=True, gridcolor="rgba(137,135,129,0.25)"),
+                   showgrid=True, gridcolor="rgba(46,68,96,0.4)"),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#898781"),
+        font=dict(color="#8fa8c4"),
         legend=dict(orientation="h", y=1.15, x=0),
-        hoverlabel=dict(bgcolor="#1a1a19", font_color="#ffffff"),
+        hoverlabel=dict(bgcolor="#0d1420", font_color="#eaf6ff"),
     )
     return fig
 
@@ -882,17 +948,17 @@ def component_votes_figure(vote_rows: list[dict]) -> go.Figure:
         hovertemplate="%{y}<br>Score: %{x:+.2f}<br>Confidence: %{customdata[1]:.0%}<br>"
                        "Effective weight (base × regime): %{customdata[0]:.2f}<extra></extra>",
     ))
-    fig.add_vline(x=0, line=dict(color="#c3c2b7", width=1))
+    fig.add_vline(x=0, line=dict(color="#2e4460", width=1))
     fig.update_layout(
         margin=dict(l=10, r=40, t=10, b=10),
         height=max(120, 40 * len(labels)),
-        xaxis=dict(range=[-1, 1], showgrid=True, gridcolor="rgba(137,135,129,0.25)", title=None),
+        xaxis=dict(range=[-1, 1], showgrid=True, gridcolor="rgba(46,68,96,0.4)", title=None),
         yaxis=dict(showgrid=False),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
-        font=dict(color="#898781"),
-        hoverlabel=dict(bgcolor="#1a1a19", font_color="#ffffff"),
+        font=dict(color="#8fa8c4"),
+        hoverlabel=dict(bgcolor="#0d1420", font_color="#eaf6ff"),
     )
     return fig
 
@@ -910,7 +976,7 @@ def currency_strength_heatmap(ranked: list) -> go.Figure:
         colorscale=[[0.0, CHART_COLORS["diverging_neg"]], [0.5, CHART_COLORS["diverging_mid"]], [1.0, CHART_COLORS["diverging_pos"]]],
         zmid=0, zmin=-1, zmax=1,
         text=[[f"{v:+.2f}" for v in row] for row in z], texttemplate="%{text}",
-        textfont=dict(size=11, color="#0b0b0b"),
+        textfont=dict(size=11, color="#eaf6ff"),
         colorbar=dict(title="Score", tickvals=[-1, 0, 1], ticktext=["-1", "0", "+1"], outlinewidth=0, len=0.8),
         hovertemplate="%{y} · %{x}<br>Score: %{z:+.2f}<extra></extra>",
         xgap=2, ygap=2,
@@ -922,8 +988,8 @@ def currency_strength_heatmap(ranked: list) -> go.Figure:
         yaxis=dict(showgrid=False, autorange="reversed"),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#898781"),
-        hoverlabel=dict(bgcolor="#1a1a19", font_color="#ffffff"),
+        font=dict(color="#8fa8c4"),
+        hoverlabel=dict(bgcolor="#0d1420", font_color="#eaf6ff"),
     )
     return fig
 
@@ -945,7 +1011,7 @@ def loss_meter_figure(pl_pct: float, limit_pct: float, label: str) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=[1.15], y=[label], orientation="h",
-        marker=dict(color="rgba(42,120,214,0.12)"), width=0.5,
+        marker=dict(color="rgba(46,68,96,0.35)"), width=0.5,
         hoverinfo="skip", showlegend=False,
     ))
     fig.add_trace(go.Bar(
@@ -954,9 +1020,9 @@ def loss_meter_figure(pl_pct: float, limit_pct: float, label: str) -> go.Figure:
         hovertemplate=f"{label}<br>P/L: {pl_pct:+.2%} of NAV<br>Limit: {-limit_pct:.1%}<extra></extra>",
         showlegend=False,
     ))
-    fig.add_vline(x=1.0, line=dict(color="#0b0b0b", width=1.5),
+    fig.add_vline(x=1.0, line=dict(color="#8fa8c4", width=1.5),
                   annotation_text="limit", annotation_position="top",
-                  annotation_font=dict(size=10, color="#898781"))
+                  annotation_font=dict(size=10, color="#8fa8c4"))
     fig.update_layout(
         barmode="overlay",
         margin=dict(l=10, r=10, t=24, b=10),
@@ -966,7 +1032,7 @@ def loss_meter_figure(pl_pct: float, limit_pct: float, label: str) -> go.Figure:
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
-        hoverlabel=dict(bgcolor="#1a1a19", font_color="#ffffff"),
+        hoverlabel=dict(bgcolor="#0d1420", font_color="#eaf6ff"),
     )
     return fig
 
@@ -997,13 +1063,13 @@ def candlestick_figure(candles: list[dict], *, entry: float | None = None,
         margin=dict(l=10, r=60, t=10, b=30),
         height=height,
         xaxis=dict(showgrid=False, rangeslider=dict(visible=False), type="date"),
-        yaxis=dict(showgrid=True, gridcolor="rgba(137,135,129,0.25)", title="Price"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(46,68,96,0.4)", title="Price"),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#898781"),
+        font=dict(color="#8fa8c4"),
         showlegend=False,
         hovermode="x unified",
-        hoverlabel=dict(bgcolor="#1a1a19", font_color="#ffffff"),
+        hoverlabel=dict(bgcolor="#0d1420", font_color="#eaf6ff"),
     )
     return fig
 
@@ -1070,7 +1136,7 @@ def render_sidebar_ticker(instruments: tuple[str, ...]) -> None:
         except Exception:  # noqa: BLE001
             closes = []
         delta_pct = (closes[-1] - closes[0]) / closes[0] if len(closes) >= 2 and closes[0] else 0.0
-        delta_color = "#0ca30c" if delta_pct >= 0 else "#d03b3b"
+        delta_color = "#39ff8f" if delta_pct >= 0 else "#ff5470"
         spark = _sparkline_svg(closes, width=40, height=14, accent=delta_color) if closes else ""
         rows_html.append(
             '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;">'
