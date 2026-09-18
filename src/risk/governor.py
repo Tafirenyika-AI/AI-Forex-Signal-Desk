@@ -247,7 +247,19 @@ class RiskDecision:
     gates: list[GateResult] = field(default_factory=list)
 
 
-def _get_or_init_day_state(engine: Engine, user_id: int, broker: str, balance: float, now: datetime) -> dict[str, Any]:
+def _get_or_init_day_state(engine: Engine, user_id: int, broker: str, nav: float, now: datetime) -> dict[str, Any]:
+    """`nav` must be account NAV/equity (AccountState.nav), NOT cash balance
+    (AccountState.balance) — real bug found live 2026-09-18: this used to be
+    called with account_balance, which is fine for OANDA (balance stays
+    close to NAV under normal use) but breaks catastrophically for Alpaca:
+    buying stock on margin legitimately drives cash negative while NAV
+    stays healthy (verified live: cash -$42,754, NAV $100,034 after a
+    652-share NVDA position). evaluate() below always compares against
+    account_nav, so snapshotting anything other than NAV here produces a
+    nonsensical daily_pl_pct the moment the two diverge — this is exactly
+    what happened: a permanently negative day_start_balance produced
+    "daily loss -328%", permanently latching the kill switch and silently
+    blocking ~48% of every real Alpaca signal for over a week."""
     day_key = now.strftime("%Y-%m-%d")
     with engine.begin() as conn:
         row = conn.execute(
@@ -262,7 +274,7 @@ def _get_or_init_day_state(engine: Engine, user_id: int, broker: str, balance: f
             user_id=user_id,
             day=day_key,
             broker=broker,
-            day_start_balance=balance,
+            day_start_balance=nav,
             kill_switch_active=False,
             kill_switch_reason=None,
             updated_at=now,
@@ -270,13 +282,14 @@ def _get_or_init_day_state(engine: Engine, user_id: int, broker: str, balance: f
         conn.execute(stmt)
         return {
             "day": day_key,
-            "day_start_balance": balance,
+            "day_start_balance": nav,
             "kill_switch_active": False,
             "kill_switch_reason": None,
         }
 
 
-def _get_or_init_week_state(engine: Engine, user_id: int, broker: str, balance: float, now: datetime) -> dict[str, Any]:
+def _get_or_init_week_state(engine: Engine, user_id: int, broker: str, nav: float, now: datetime) -> dict[str, Any]:
+    """See _get_or_init_day_state's docstring — same NAV-not-balance fix."""
     iso_year, iso_week, _ = now.isocalendar()
     week_key = f"{iso_year}-W{iso_week:02d}"
     with engine.begin() as conn:
@@ -290,10 +303,10 @@ def _get_or_init_week_state(engine: Engine, user_id: int, broker: str, balance: 
             return dict(row)
         conn.execute(
             insert(risk_state_weekly_table).values(
-                user_id=user_id, iso_week=week_key, broker=broker, week_start_balance=balance, updated_at=now,
+                user_id=user_id, iso_week=week_key, broker=broker, week_start_balance=nav, updated_at=now,
             )
         )
-        return {"iso_week": week_key, "week_start_balance": balance}
+        return {"iso_week": week_key, "week_start_balance": nav}
 
 
 def set_kill_switch(
@@ -302,6 +315,18 @@ def set_kill_switch(
     now = now or datetime.now(timezone.utc)
     day_key = now.strftime("%Y-%m-%d")
     with engine.begin() as conn:
+        # day_start_balance=0.0 here is a placeholder, not a real NAV — this
+        # function (unlike _get_or_init_day_state) has no account NAV in
+        # scope, since its dashboard callers toggle the switch for both
+        # brokers at once without fetching either one's account state first.
+        # Harmless ONLY because evaluate()'s daily_pl_pct calc explicitly
+        # guards `if day_state["day_start_balance"] else 0.0` — a 0.0 here
+        # short-circuits to "0% daily P/L" rather than dividing by zero or
+        # falsely tripping the kill switch. If this row is the first one
+        # created for the day (no prior evaluate() cycle today), the day's
+        # real P/L just won't be tracked correctly until the next day
+        # rolls over — a known, deliberately accepted gap, not the bug
+        # fixed above in _get_or_init_day_state/_get_or_init_week_state.
         stmt = insert(risk_state_table).values(
             user_id=user_id,
             day=day_key,
@@ -359,7 +384,7 @@ def evaluate(
         return passed
 
     # --- kill-switch gate (checked first; nothing below can override it) ---
-    day_state = _get_or_init_day_state(engine, user_id, broker, account_balance, now)
+    day_state = _get_or_init_day_state(engine, user_id, broker, account_nav, now)
     daily_pl_pct = (account_nav - day_state["day_start_balance"]) / day_state["day_start_balance"] if day_state["day_start_balance"] else 0.0
 
     if day_state["kill_switch_active"]:
@@ -378,7 +403,7 @@ def evaluate(
 
     # Weekly loss limit (spec sec. 17) — catches a slow bleed spread across
     # several down days that never individually breach the daily limit.
-    week_state = _get_or_init_week_state(engine, user_id, broker, account_balance, now)
+    week_state = _get_or_init_week_state(engine, user_id, broker, account_nav, now)
     weekly_pl_pct = (
         (account_nav - week_state["week_start_balance"]) / week_state["week_start_balance"]
         if week_state["week_start_balance"] else 0.0
