@@ -54,7 +54,14 @@ LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo.png"
 
 
 @st.cache_data(show_spinner=False)
-def _logo_base64() -> str | None:
+def _logo_base64(_cache_key: float) -> str | None:
+    """_cache_key: LOGO_PATH's own mtime, passed by the caller — real bug
+    found live 2026-09-17: with no arguments, st.cache_data caches this
+    forever for the life of the running process, so a running dashboard
+    (local or Streamlit Cloud) kept serving the OLD logo's base64 from
+    memory even after the file on disk changed and the process picked up
+    the new code, until it was fully restarted. Keying on mtime makes a
+    file change bust the cache on its own, not just a process restart."""
     if not LOGO_PATH.exists():
         return None
     return base64.b64encode(LOGO_PATH.read_bytes()).decode()
@@ -65,7 +72,7 @@ def _render_logo(width_px: int = 150) -> None:
     single st.markdown call) — safe from the div-spanning-multiple-calls
     bug described in the module docstring, since nothing else needs to
     nest inside it."""
-    b64 = _logo_base64()
+    b64 = _logo_base64(LOGO_PATH.stat().st_mtime if LOGO_PATH.exists() else 0.0)
     if b64 is None:
         return
     st.markdown(

@@ -1075,7 +1075,7 @@ def candlestick_figure(candles: list[dict], *, entry: float | None = None,
 
 
 # ==================================================================== header
-_brand_logo = _brand_logo_base64()
+_brand_logo = _brand_logo_base64(LOGO_PATH.stat().st_mtime if LOGO_PATH.exists() else 0.0)
 _logo_img_html = f'<img src="data:image/png;base64,{_brand_logo}" height="44" style="flex-shrink:0;" />' if _brand_logo else ""
 st.markdown(
     f'<div style="display:flex; align-items:center; gap:14px; margin-bottom:4px;">'
