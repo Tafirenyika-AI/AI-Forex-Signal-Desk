@@ -44,6 +44,18 @@ RISK_PER_TRADE_CEILING_PCT = 0.03  # up to 3% for a maximally confident signal
 DAILY_LOSS_LIMIT_PCT = 0.015  # 1.5%, sec. 8 "example research setting"
 MAX_CONCURRENT_POSITIONS = 3
 MAX_CORRELATED_EXPOSURE_PCT = 0.05  # cap aggregate same-USD-direction notional / NAV
+# Hard ceiling on total same-direction notional in equities/crypto, as a
+# fraction of NAV — i.e. no leverage: an equity/crypto position may never
+# be bigger than the account itself (user-approved 2026-09-18). Found live:
+# sizing is purely risk-per-trade (1-3% of equity / per-share stop
+# distance) and MAX_CORRELATED_EXPOSURE_PCT above only looks at exposure
+# ALREADY open, not the new trade's own size — so a tight ATR stop on a
+# high-priced stock produced a 652-share, $142k (1.4x NAV) NVDA position
+# that drove Alpaca's cash to -$42,754, and a QQQ test sized to 2.3x NAV.
+# NOT applied to forex: OANDA is leveraged by design (a 1% risk / 30-pip
+# stop is routinely several times NAV in notional), so a 100% cap there
+# would gut every forex trade — a different, much larger policy change.
+MAX_EQUITY_CRYPTO_NOTIONAL_PCT = 1.0
 
 # --- sec. 7 gates (defaults) ---
 # Per-feed staleness thresholds: a price stream stale for 30s is a real
@@ -553,14 +565,35 @@ def evaluate(
     # Crypto keeps genuine fractional sizing (see RiskDecision.size_units'
     # docstring) — forex/equities truncate to a whole unit/share, which is
     # how both actually trade in this system.
+    notional_note = ""
+    if usd_direction_key in ("equity_long", "equity_short", "crypto_long", "crypto_short"):
+        # Headroom = the no-leverage ceiling minus same-direction notional
+        # already open in this asset class, so several positions can't add
+        # up past it either — not just one oversized trade.
+        already_open = open_positions_usd_direction.get(usd_direction_key, 0.0)
+        headroom_usd = account_nav * MAX_EQUITY_CRYPTO_NOTIONAL_PCT - already_open
+        if current_price > 0:
+            max_units_by_notional = max(0.0, headroom_usd / current_price)
+            if raw_size > max_units_by_notional:
+                notional_note = (
+                    f", capped from {raw_size:.4g} to {max_units_by_notional:.4g} units "
+                    f"by the {MAX_EQUITY_CRYPTO_NOTIONAL_PCT:.0%}-of-NAV notional ceiling "
+                    f"(${headroom_usd:,.0f} headroom, ${already_open:,.0f} already open)"
+                )
+                raw_size = max_units_by_notional
     size_units = raw_size if "/" in instrument else int(raw_size)
-    effective_risk_pct = (risk_amount_usd / account_nav) if account_nav else 0.0
+    # Reported from the ACTUAL size, so a notional-capped trade shows the
+    # (lower) risk it really carries rather than the pre-cap target.
+    actual_risk_usd = size_units * per_unit_usd_risk
+    effective_risk_pct = (actual_risk_usd / account_nav) if account_nav else 0.0
     size_detail = (
-        f"{size_units} units at {effective_risk_pct:.2%} risk (${risk_amount_usd:.2f}) "
+        f"{size_units} units at {effective_risk_pct:.2%} risk (${actual_risk_usd:.2f}) "
         f"[baseline {risk_pct:.2%}, regime x{regime_multiplier:.2f}, confidence x{confidence_multiplier:.2f}, "
-        f"track_record x{track_record_multiplier:.2f} ({track_record_detail})]"
+        f"track_record x{track_record_multiplier:.2f} ({track_record_detail})]{notional_note}"
     )
     if not gate("sizing", size_units > 0, size_detail):
+        if notional_note:
+            return RiskDecision(False, "notional ceiling reached", None, gates)
         return RiskDecision(False, "computed size is zero", None, gates)
 
     return RiskDecision(True, "approved", size_units, gates)

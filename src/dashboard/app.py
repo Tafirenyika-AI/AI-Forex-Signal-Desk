@@ -2102,6 +2102,95 @@ with tab_currency:
 
 # ------------------------------------------------------------------ account --
 with tab_account:
+    # Combined portfolio: real broker accounts only (OANDA demo + Alpaca).
+    # The simulated paper ledger is its own separate $100k and would muddy
+    # every total here, so it stays in its own section below. Reuses the same
+    # 15s-cached fetches the per-account sections below already make, so this
+    # adds no extra broker calls.
+    st.subheader("🌐 Combined portfolio (OANDA demo + Alpaca)")
+    _combined_sources: list[tuple[str, object, list]] = []
+    try:
+        _o_state, _o_positions = cached_account_state("demo", CURRENT_USER_ID)
+        _combined_sources.append(("oanda", _o_state, _o_positions))
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"Combined view: could not load OANDA demo account: {exc!r}")
+    if _alpaca_configured():
+        try:
+            _a_state, _a_positions = cached_alpaca_account_state(CURRENT_USER_ID)
+            _combined_sources.append(("alpaca", _a_state, _a_positions))
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"Combined view: could not load Alpaca account: {exc!r}")
+
+    with engine.connect() as _conn:
+        _realized_by_broker = {
+            row[0]: float(row[1] or 0.0)
+            for row in _conn.execute(
+                select(trade_outcomes_table.c.broker, func.sum(trade_outcomes_table.c.realized_pl_usd))
+                .where(trade_outcomes_table.c.user_id == CURRENT_USER_ID)
+                .group_by(trade_outcomes_table.c.broker)
+            ).all()
+        }
+
+    _broker_rows = []
+    _position_rows = []
+    for _bk, _st, _pos in _combined_sources:
+        _broker_rows.append({
+            "Broker": BROKER_LABELS.get(_bk, _bk),
+            "NAV": _st.nav,
+            "Unrealized P/L": _st.unrealized_pl,
+            "Realized P/L (closed trades)": _realized_by_broker.get(_bk, 0.0),
+            "Open positions": _st.open_position_count,
+        })
+        for _p in _pos:
+            if _bk == "alpaca":
+                _inst = _p["symbol"]
+                _qty = float(_p.get("qty") or 0)
+                if not _qty:
+                    continue
+                _position_rows.append({
+                    "Broker": BROKER_LABELS["alpaca"], "Instrument": _inst,
+                    "Market": ASSET_CLASS_LABELS.get(asset_class_for(_inst), "").split(" · ")[0],
+                    "Side": str(_p.get("side", "")).upper(), "Units": abs(_qty),
+                    "Entry": float(_p.get("avg_entry_price") or 0),
+                    "Unrealized P/L": float(_p.get("unrealized_pl") or 0),
+                })
+            else:
+                _inst = _p.get("instrument", "")
+                for _side in ("long", "short"):
+                    _leg = _p.get(_side) or {}
+                    _units = float(_leg.get("units", "0") or 0)
+                    if not _units:
+                        continue
+                    _position_rows.append({
+                        "Broker": BROKER_LABELS["oanda"], "Instrument": _inst,
+                        "Market": ASSET_CLASS_LABELS.get(asset_class_for(_inst), "").split(" · ")[0],
+                        "Side": _side.upper(), "Units": abs(_units),
+                        "Entry": float(_leg.get("averagePrice") or 0),
+                        "Unrealized P/L": float(_leg.get("unrealizedPL") or 0),
+                    })
+
+    if _broker_rows:
+        _total_nav = sum(r["NAV"] for r in _broker_rows)
+        _total_unrealized = sum(r["Unrealized P/L"] for r in _broker_rows)
+        _total_realized = sum(r["Realized P/L (closed trades)"] for r in _broker_rows)
+        _total_open = sum(r["Open positions"] for r in _broker_rows)
+        cc1, cc2, cc3, cc4 = st.columns(4)
+        cc1.metric("Combined NAV", f"${_total_nav:,.2f}")
+        cc2.metric("Unrealized P/L", f"${_total_unrealized:,.2f}")
+        cc3.metric("Realized P/L (closed)", f"${_total_realized:,.2f}")
+        cc4.metric("Open positions", _total_open)
+        st.dataframe(pd.DataFrame(_broker_rows), width="stretch", hide_index=True)
+        if _position_rows:
+            st.markdown("**All open positions, both brokers**")
+            st.dataframe(pd.DataFrame(_position_rows), width="stretch", hide_index=True)
+        else:
+            st.caption("No open positions on either broker.")
+        st.caption(
+            "Unrealized P/L is not locked in until the position closes — it moves with the market, "
+            "and a leveraged position moves it faster. Only closed trades count as realized."
+        )
+    st.divider()
+
     for mode in ["paper", "demo"]:
         st.subheader(f"{'📝 Paper' if mode == 'paper' else '🏦 OANDA Demo'} account")
         try:
@@ -2154,11 +2243,12 @@ with tab_risk:
 
     st.markdown("#### Hard limits")
     limits_rows = [
-        {"Control": "Per-trade risk", "Value": f"{risk_governor.RISK_PER_TRADE_PCT:.2%} of balance (ceiling {risk_governor.RISK_PER_TRADE_CEILING_PCT:.2%})"},
+        {"Control": "Per-trade risk", "Value": f"{risk_governor.RISK_PER_TRADE_PCT:.2%} of NAV (ceiling {risk_governor.RISK_PER_TRADE_CEILING_PCT:.2%})"},
         {"Control": "Daily loss limit", "Value": f"{risk_governor.DAILY_LOSS_LIMIT_PCT:.2%} — engages kill switch"},
         {"Control": "Weekly loss limit", "Value": f"{risk_governor.WEEKLY_LOSS_LIMIT_PCT:.2%} — engages kill switch"},
         {"Control": "Max concurrent positions", "Value": str(risk_governor.MAX_CONCURRENT_POSITIONS)},
         {"Control": "Max correlated USD exposure", "Value": f"{risk_governor.MAX_CORRELATED_EXPOSURE_PCT:.2%} of NAV"},
+        {"Control": "Equity/crypto notional ceiling", "Value": f"{risk_governor.MAX_EQUITY_CRYPTO_NOTIONAL_PCT:.0%} of NAV, same-direction total (no leverage; forex exempt)"},
         {"Control": "Spread guard", "Value": f"reject above {risk_governor.MAX_SPREAD_MULTIPLE}x recent median spread"},
         {"Control": "Min confidence", "Value": f"{risk_governor.MIN_CONFIDENCE:.0%} — below this, no sizing"},
         {"Control": "Event lockout", "Value": f"{risk_governor.EVENT_LOCKOUT_MINUTES} min around tier-1 releases"},
