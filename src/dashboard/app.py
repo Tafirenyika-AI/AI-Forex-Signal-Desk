@@ -1097,7 +1097,7 @@ if _all_outcomes_for_header:
     _closed = len(_hdf)
     _win_rate = _wins / _closed if _closed else 0.0
     with hc1:
-        stat_tile("Total Realized P&L", f"${_total_pl:+,.2f}", f"{_closed} closed trades",
+        stat_tile("Total Realized P&L", f"${_total_pl:+,.2f}", f"{_closed} closed trades · open positions not counted",
                    polarity="positive" if _total_pl >= 0 else "negative")
     with hc2:
         stat_tile("Win Rate", f"{_win_rate:.0%}", f"{_wins}W / {_closed - _wins}L")
@@ -1703,7 +1703,7 @@ with tab_trades:
 
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            stat_tile("Total Realized P&L", f"${total_pl:+,.2f}", f"{total} closed trades",
+            stat_tile("Total Realized P&L", f"${total_pl:+,.2f}", f"{total} closed trades · open positions not counted",
                       polarity="positive" if total_pl >= 0 else "negative", trend=cumulative_pl_trend)
         with c2:
             stat_tile("Win Rate", f"{win_rate:.0%}", f"{wins}W / {losses}L")
@@ -2174,11 +2174,12 @@ with tab_account:
         _total_unrealized = sum(r["Unrealized P/L"] for r in _broker_rows)
         _total_realized = sum(r["Realized P/L (closed trades)"] for r in _broker_rows)
         _total_open = sum(r["Open positions"] for r in _broker_rows)
-        cc1, cc2, cc3, cc4 = st.columns(4)
+        cc1, cc2, cc3, cc4, cc5 = st.columns(5)
         cc1.metric("Combined NAV", f"${_total_nav:,.2f}")
         cc2.metric("Unrealized P/L", f"${_total_unrealized:,.2f}")
         cc3.metric("Realized P/L (closed)", f"${_total_realized:,.2f}")
-        cc4.metric("Open positions", _total_open)
+        cc4.metric("Total P/L (realized + unrealized)", f"${_total_realized + _total_unrealized:,.2f}")
+        cc5.metric("Open positions", _total_open)
         st.dataframe(pd.DataFrame(_broker_rows), width="stretch", hide_index=True)
         if _position_rows:
             st.markdown("**All open positions, both brokers**")
