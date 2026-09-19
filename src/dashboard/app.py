@@ -35,6 +35,41 @@ import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import Integer, func, select
 
+
+def _drop_stale_src_modules() -> None:
+    """Real recurring bug, hit FOUR times in one week on Streamlit Cloud
+    (settings.alpaca_api_key, AUTO_DEPLOY_MIN_ACCURACY,
+    MAX_EQUITY_CRYPTO_NOTIONAL_PCT, ...): a git push re-reads THIS script
+    fresh, but Python keeps every already-imported `src.*` module cached in
+    sys.modules for the life of the process — so the new app.py references a
+    constant/field that only exists in the NEW version of a module the
+    process is still holding the OLD version of, and the whole page dies
+    with an AttributeError/ImportError until someone clicks "Reboot app".
+    Worse than cosmetic: a stale risk governor in this process would also
+    run the manual "Scan markets now" button with the OLD sizing rules.
+
+    Fix: fingerprint every src/**/*.py by mtime. When it changes vs. what
+    this process last loaded, drop all cached `src.*` modules (so the
+    imports below re-read disk) and clear Streamlit's caches (they can hold
+    objects built from the old classes, e.g. an old Settings). Runs before
+    any project import; a brand-new process just records the fingerprint.
+    Purge first, THEN record it, so a concurrent session can't see the new
+    fingerprint while stale modules are still cached."""
+    src_root = Path(__file__).resolve().parent.parent
+    newest = max((p.stat().st_mtime_ns for p in src_root.rglob("*.py")), default=0)
+    known = getattr(sys, "_af_code_signature", None)
+    if known == newest:
+        return
+    if known is not None:
+        for name in [n for n in sys.modules if n == "src" or n.startswith("src.")]:
+            del sys.modules[name]
+        st.cache_resource.clear()
+        st.cache_data.clear()
+    sys._af_code_signature = newest
+
+
+_drop_stale_src_modules()
+
 from src.auth import service as user_auth_service
 from src.authorization import service as auth_service
 from src.broker.alpaca import AlpacaBroker
