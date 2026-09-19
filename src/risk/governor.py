@@ -528,13 +528,21 @@ def evaluate(
     # guard exists to catch.
     track_record_multiplier, track_record_detail = instrument_reliability_multiplier(engine, user_id, instrument)
     size_multiplier = regime_multiplier * confidence_multiplier * track_record_multiplier
-    risk_amount_usd = account_balance * risk_pct * size_multiplier
+    # Sized off NAV (equity), not cash balance — same balance-vs-NAV bug
+    # class as _get_or_init_day_state above (found live 2026-09-18): on a
+    # margin account cash goes legitimately NEGATIVE once a leveraged
+    # position is open (Alpaca: cash -$42,754 vs NAV ~$100k after a
+    # 652-share NVDA buy), which made this a negative risk amount and
+    # rejected every new Alpaca signal as "computed size is zero" for as
+    # long as that position stayed open. "1% of account at risk" has
+    # always meant equity, not uninvested cash.
+    risk_amount_usd = account_nav * risk_pct * size_multiplier
     # Defense in depth: regime/track_record are each <=1.0 and confidence
     # is bounded to confidence_ceiling_multiplier by construction above, so
     # this can't mathematically exceed RISK_PER_TRADE_CEILING_PCT anyway —
     # clamped explicitly regardless, since this is the one gate allowed to
     # increase size and a silent math error here would size a real order.
-    risk_amount_usd = min(risk_amount_usd, account_balance * RISK_PER_TRADE_CEILING_PCT)
+    risk_amount_usd = min(risk_amount_usd, account_nav * RISK_PER_TRADE_CEILING_PCT)
     try:
         per_unit_usd_risk = stop_distance * usd_value_per_unit(instrument, current_price, usd_rates)
     except ValueError as exc:
@@ -546,7 +554,7 @@ def evaluate(
     # docstring) — forex/equities truncate to a whole unit/share, which is
     # how both actually trade in this system.
     size_units = raw_size if "/" in instrument else int(raw_size)
-    effective_risk_pct = (risk_amount_usd / account_balance) if account_balance else 0.0
+    effective_risk_pct = (risk_amount_usd / account_nav) if account_nav else 0.0
     size_detail = (
         f"{size_units} units at {effective_risk_pct:.2%} risk (${risk_amount_usd:.2f}) "
         f"[baseline {risk_pct:.2%}, regime x{regime_multiplier:.2f}, confidence x{confidence_multiplier:.2f}, "
