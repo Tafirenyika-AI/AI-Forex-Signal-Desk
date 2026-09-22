@@ -266,6 +266,15 @@ p, span, div, label { color: var(--af-ink); }
 a, a:visited { color: var(--af-accent) !important; }
 img { border-radius: var(--af-radius-md); box-shadow: 0 0 20px rgba(76,224,255,0.2); }
 
+/* Real gap found 2026-09-22: Streamlit's own column-row wrapper does NOT
+   stretch its children to equal height by default, so stat tiles with
+   different content (a trend sparkline, a longer sub-caption, ...) sat at
+   different heights in the same row — messy, inconsistent-looking cards.
+   align-items: stretch on the row + flex column layout on the tile itself
+   (space-between so the label/value/sub still sit where they did) fixes
+   every row of cards at once, everywhere stat_tile() is used. */
+[data-testid="stHorizontalBlock"] { align-items: stretch; }
+
 .af-stat-tile {
   background: var(--af-surface);
   backdrop-filter: blur(6px);
@@ -273,6 +282,43 @@ img { border-radius: var(--af-radius-md); box-shadow: 0 0 20px rgba(76,224,255,0
   padding: var(--af-space-4) var(--af-space-5);
   box-shadow: var(--af-shadow-1);
   height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.af-standing-card {
+  background: var(--af-surface);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--af-border-bright);
+  border-radius: var(--af-radius-lg);
+  padding: var(--af-space-5) var(--af-space-6);
+  box-shadow: var(--af-shadow-2);
+  margin-bottom: var(--af-space-2);
+}
+.af-standing-label {
+  font-size: var(--af-text-xs);
+  color: var(--af-ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  margin-bottom: var(--af-space-2);
+}
+.af-standing-row {
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: var(--af-ink);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--af-space-2);
+}
+.af-standing-row b { font-variant-numeric: tabular-nums; }
+.af-standing-arrow { color: var(--af-ink-muted); font-weight: 400; }
+.af-standing-sub {
+  margin-top: var(--af-space-2);
+  font-size: var(--af-text-sm);
+  color: var(--af-ink-secondary);
+  font-variant-numeric: tabular-nums;
 }
 .af-stat-label {
   font-size: var(--af-text-xs);
@@ -1121,6 +1167,62 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.write("")
+
+# ------------------------------------------------------ account standing --
+# User-requested 2026-09-22: a single, unmissable, plain-language answer to
+# "am I up or down overall" — "NAV"/"unrealized P/L" had already confused
+# the same question twice (see chat history). Deliberately the FIRST
+# substantive thing on every page, before the more technical stat row below.
+# Starting balances are this project's own documented conventions, not
+# guessed: $10,000 for OANDA (src/evaluation/promotion_gates.py's own
+# "this project's paper/demo starting balance convention" — matches the
+# real first-ever tracked balance, ~$10,009, from 2026-08-13) and $100,000
+# for Alpaca (its standard paper-account default — matches the real first
+# tracked balance, ~$99,999.20, from 2026-08-24). Read-only: fetches the
+# same 15s-cached account state other tabs already use, no new broker
+# calls, and touches nothing about open positions or order execution.
+_AS_STARTING_BALANCE = {"oanda": 10_000.0, "alpaca": 100_000.0}
+_as_rows = []
+try:
+    _as_o_state, _ = cached_account_state("demo", CURRENT_USER_ID)
+    _as_rows.append(("oanda", _as_o_state.nav))
+except Exception:  # noqa: BLE001 — this banner must never block the rest of the page
+    pass
+if _alpaca_configured():
+    try:
+        _as_a_state, _ = cached_alpaca_account_state(CURRENT_USER_ID)
+        _as_rows.append(("alpaca", _as_a_state.nav))
+    except Exception:  # noqa: BLE001
+        pass
+
+if _as_rows:
+    _as_deposited = sum(_AS_STARTING_BALANCE[bk] for bk, _ in _as_rows)
+    _as_now = sum(nav for _, nav in _as_rows)
+    _as_diff = _as_now - _as_deposited
+    _as_pct = (_as_diff / _as_deposited) if _as_deposited else 0.0
+    _as_word = "profit" if _as_diff >= 0 else "loss"
+    _as_color = "var(--af-good-text)" if _as_diff >= 0 else "var(--af-bad-text)"
+    _as_glow = "rgba(57,255,143,0.5)" if _as_diff >= 0 else "rgba(255,84,112,0.5)"
+    _as_per_broker = "  ·  ".join(
+        f"{BROKER_LABELS[bk]}: ${_AS_STARTING_BALANCE[bk]:,.0f} → ${nav:,.2f}"
+        for bk, nav in _as_rows
+    )
+    st.markdown(
+        f'<div class="af-standing-card">'
+        f'<div class="af-standing-label">Account Standing — money in vs. money now</div>'
+        f'<div class="af-standing-row">'
+        f'<span>You put in <b>${_as_deposited:,.0f}</b></span>'
+        f'<span class="af-standing-arrow">→</span>'
+        f'<span>it\'s worth <b>${_as_now:,.2f}</b> right now</span>'
+        f'<span class="af-standing-arrow">→</span>'
+        f'<span style="color:{_as_color};text-shadow:0 0 14px {_as_glow};font-weight:800;">'
+        f'{_as_word.upper()} ${abs(_as_diff):,.2f} ({_as_pct:+.1%})</span>'
+        f'</div>'
+        f'<div class="af-standing-sub">{_as_per_broker}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    st.write("")
 
 _all_outcomes_for_header = fetch_trade_outcomes(engine, CURRENT_USER_ID)
 _header_pending_count = len(auth_service.list_pending(engine, CURRENT_USER_ID))
@@ -2171,9 +2273,9 @@ with tab_account:
     for _bk, _st, _pos in _combined_sources:
         _broker_rows.append({
             "Broker": BROKER_LABELS.get(_bk, _bk),
-            "NAV": _st.nav,
-            "Unrealized P/L": _st.unrealized_pl,
-            "Realized P/L (closed trades)": _realized_by_broker.get(_bk, 0.0),
+            "Account Value": _st.nav,
+            "Not Yet Sold (Unrealized)": _st.unrealized_pl,
+            "Already Sold (Realized)": _realized_by_broker.get(_bk, 0.0),
             "Open positions": _st.open_position_count,
         })
         for _p in _pos:
@@ -2187,7 +2289,7 @@ with tab_account:
                     "Market": ASSET_CLASS_LABELS.get(asset_class_for(_inst), "").split(" · ")[0],
                     "Side": str(_p.get("side", "")).upper(), "Units": abs(_qty),
                     "Entry": float(_p.get("avg_entry_price") or 0),
-                    "Unrealized P/L": float(_p.get("unrealized_pl") or 0),
+                    "Not Yet Sold (Unrealized)": float(_p.get("unrealized_pl") or 0),
                 })
             else:
                 _inst = _p.get("instrument", "")
@@ -2201,19 +2303,31 @@ with tab_account:
                         "Market": ASSET_CLASS_LABELS.get(asset_class_for(_inst), "").split(" · ")[0],
                         "Side": _side.upper(), "Units": abs(_units),
                         "Entry": float(_leg.get("averagePrice") or 0),
-                        "Unrealized P/L": float(_leg.get("unrealizedPL") or 0),
+                        "Not Yet Sold (Unrealized)": float(_leg.get("unrealizedPL") or 0),
                     })
 
     if _broker_rows:
-        _total_nav = sum(r["NAV"] for r in _broker_rows)
-        _total_unrealized = sum(r["Unrealized P/L"] for r in _broker_rows)
-        _total_realized = sum(r["Realized P/L (closed trades)"] for r in _broker_rows)
+        _total_nav = sum(r["Account Value"] for r in _broker_rows)
+        _total_unrealized = sum(r["Not Yet Sold (Unrealized)"] for r in _broker_rows)
+        _total_realized = sum(r["Already Sold (Realized)"] for r in _broker_rows)
         _total_open = sum(r["Open positions"] for r in _broker_rows)
+        # Ground-truth profit/loss: current account value minus what was
+        # actually deposited — the same math the Account Standing banner at
+        # the top of the page uses. Deliberately NOT "realized + unrealized"
+        # (real gap found live 2026-09-22: that trade-log-derived figure can
+        # drift a little from this one — ~$85 seen live — from broker fees/
+        # financing charges that never land in trade_outcomes as a row).
+        # Showing two different "profit" numbers on the same page would be
+        # exactly the confusion this section exists to prevent, so this one
+        # wins as the headline; the trade-log figure is still shown, just
+        # captioned honestly as the secondary, less authoritative one.
+        _total_deposited = sum(_AS_STARTING_BALANCE.get(_bk, 0.0) for _bk, _, _ in _combined_sources)
+        _total_pl = _total_nav - _total_deposited if _total_deposited else (_total_realized + _total_unrealized)
         cc1, cc2, cc3, cc4, cc5 = st.columns(5)
-        cc1.metric("Combined NAV", f"${_total_nav:,.2f}")
-        cc2.metric("Unrealized P/L", f"${_total_unrealized:,.2f}")
-        cc3.metric("Realized P/L (closed)", f"${_total_realized:,.2f}")
-        cc4.metric("Total P/L (realized + unrealized)", f"${_total_realized + _total_unrealized:,.2f}")
+        cc1.metric("Combined Account Value", f"${_total_nav:,.2f}")
+        cc2.metric("Not Yet Sold (Unrealized)", f"${_total_unrealized:,.2f}")
+        cc3.metric("Already Sold (Realized)", f"${_total_realized:,.2f}")
+        cc4.metric("Total Profit/Loss", f"${_total_pl:,.2f}", help="Account value minus total deposited — matches the Account Standing banner above.")
         cc5.metric("Open positions", _total_open)
         st.dataframe(pd.DataFrame(_broker_rows), width="stretch", hide_index=True)
         if _position_rows:
@@ -2222,8 +2336,11 @@ with tab_account:
         else:
             st.caption("No open positions on either broker.")
         st.caption(
-            "Unrealized P/L is not locked in until the position closes — it moves with the market, "
-            "and a leveraged position moves it faster. Only closed trades count as realized."
+            "\"Not yet sold\" money moves with the market until you close the position — it isn't "
+            "locked in, and a leveraged position moves it faster. Only closed (sold) trades count "
+            "as \"already sold.\" Note: Already Sold + Not Yet Sold can differ slightly from Total "
+            "Profit/Loss above — broker fees and financing charges affect account value directly "
+            "but aren't always logged as their own trade row."
         )
     st.divider()
 
