@@ -197,6 +197,7 @@ async def authorize(
     execution_service: ExecutionService,
     trade_intent_id: int,
     decision: Literal["APPROVED", "REJECTED"],
+    calling_user_id: int,
     authorized_by: str = "user",
     notes: str | None = None,
     now: datetime | None = None,
@@ -210,6 +211,25 @@ async def authorize(
     if intent is None:
         raise ValueError(f"No trade_intent with id={trade_intent_id}")
     intent = _row_to_dict(dict(intent))
+
+    # Real bug found 2026-09-22 (external review, P0-05): this had no
+    # ownership check at all — trade_intent_id is a sequential, trivially
+    # guessable integer primary key, and this function's ONLY protection
+    # against approving/rejecting a DIFFERENT user's pending trade was
+    # relying entirely on the dashboard's own list_pending() UI never
+    # showing another user's id, with no server-side backstop. Worse than
+    # a read: the broker/execution_service passed in belong to whoever is
+    # CURRENTLY LOGGED IN, not the intent's actual owner — so a mismatch
+    # would place a real order using the WRONG user's broker credentials,
+    # sized/directed by another user's private signal data. Enforced here,
+    # not just in the UI, per "authenticated owner... immediately before
+    # sending" (P0-03's own acceptance criteria, which this equally
+    # protects, since it's the same call site).
+    if intent["user_id"] != calling_user_id:
+        raise PermissionError(
+            f"trade_intent {trade_intent_id} belongs to user {intent['user_id']}, "
+            f"not the calling user {calling_user_id} — refusing to authorize."
+        )
 
     # Real bug found 2026-09-22 (external review, P0-03, T10): this used to
     # be a plain read-then-later-write with no atomic claim in between —

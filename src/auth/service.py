@@ -256,12 +256,32 @@ def revoke_session(engine: Engine, session_token: str) -> None:
         conn.execute(sessions_table.delete().where(sessions_table.c.session_token == session_token))
 
 
+def revoke_all_sessions_for_user(engine: Engine, user_id: int) -> None:
+    """Invalidates EVERY existing session for this user, everywhere — used
+    after a password change or an account disable (P0-05, 2026-09-22).
+    Real gap found: change_password() used to only update the password
+    hash, leaving any session token someone already held (an attacker who
+    compromised the account, or just another logged-in device) fully
+    valid until its normal TTL — completely defeating the point of
+    changing a password after a suspected compromise. Deletes rather than
+    marks-revoked since nothing else in this codebase ever reads a
+    sessions row after it's no longer valid (validate_session() is the
+    only reader, and it already treats "no row" and "expired row" the
+    same way)."""
+    with engine.begin() as conn:
+        conn.execute(sessions_table.delete().where(sessions_table.c.user_id == user_id))
+
+
 def change_password(engine: Engine, user_id: int, new_password: str) -> None:
     with engine.begin() as conn:
         conn.execute(
             update(users_table).where(users_table.c.id == user_id)
             .values(password_hash=hash_password(new_password), updated_at=datetime.now(timezone.utc))
         )
+    # See revoke_all_sessions_for_user's own docstring for why this is
+    # not optional — a password change that doesn't invalidate existing
+    # sessions doesn't actually lock anyone out.
+    revoke_all_sessions_for_user(engine, user_id)
 
 
 # ------------------------------------------------------------------- admin --
@@ -285,6 +305,13 @@ def set_user_status(engine: Engine, user_id: int, status: str) -> None:
             update(users_table).where(users_table.c.id == user_id)
             .values(status=status, updated_at=datetime.now(timezone.utc))
         )
+    if status == "disabled":
+        # Immediate effect rather than waiting for the dashboard's own
+        # periodic session revalidation (up to SESSION_REVALIDATE_
+        # INTERVAL_SECONDS) or the session's natural TTL to catch it —
+        # disabling an account should mean "logged out now," not "logged
+        # out eventually" (P0-05, 2026-09-22).
+        revoke_all_sessions_for_user(engine, user_id)
 
 
 # --------------------------------------------------------------- onboarding --

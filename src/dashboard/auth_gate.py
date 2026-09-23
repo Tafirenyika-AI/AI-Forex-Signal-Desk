@@ -45,7 +45,24 @@ from src.config import settings_for_user
 
 SESSION_USER_KEY = "auth_user"
 SESSION_TOKEN_KEY = "auth_session_token"
+SESSION_LAST_VALIDATED_KEY = "auth_last_validated_at"
 ONBOARDING_INSTRUMENTS_KEY = "onboarding_instruments"
+
+# How often an already-logged-in session re-checks itself against the DB
+# (external review, P0-05, 2026-09-22). Real gap found: current_user()
+# just reads st.session_state, which — once populated at login — was
+# trusted for the ENTIRE lifetime of that live Streamlit session (a
+# WebSocket connection that can stay open for a long time across many
+# reruns/interactions) with NO re-check at all. An admin disabling a
+# user's account (set_user_status) or a password change (which SHOULD
+# revoke sessions — see change_password's own docstring) would have zero
+# effect on someone already mid-session until they closed the tab and
+# reconnected. Every rerun re-validating would be a DB round-trip per
+# interaction (this project has a real, documented sensitivity to exactly
+# that kind of per-rerun cost — see get_engine()'s own docstring on the
+# ~36-table-check perf bug); a periodic re-check is the standard
+# middle ground between "never" and "every single interaction."
+SESSION_REVALIDATE_INTERVAL_SECONDS = 300  # 5 minutes
 
 COOKIE_NAME = "af_session_token"
 COOKIE_MAX_AGE_DAYS = 30
@@ -143,6 +160,7 @@ def _start_session(engine: Engine, user: dict) -> None:
     token = auth_service.create_session(engine, user["id"])
     st.session_state[SESSION_USER_KEY] = user
     st.session_state[SESSION_TOKEN_KEY] = token
+    st.session_state[SESSION_LAST_VALIDATED_KEY] = datetime.now(timezone.utc)
     _write_session_cookie(token)
 
 
@@ -155,6 +173,38 @@ def _restore_session_from_cookie(engine: Engine) -> bool:
         return False
     st.session_state[SESSION_USER_KEY] = user
     st.session_state[SESSION_TOKEN_KEY] = token
+    st.session_state[SESSION_LAST_VALIDATED_KEY] = datetime.now(timezone.utc)
+    return True
+
+
+def _revalidate_if_due(engine: Engine) -> bool:
+    """Re-checks the cached session against the DB if
+    SESSION_REVALIDATE_INTERVAL_SECONDS has elapsed since the last check —
+    see that constant's own docstring for the bug this fixes. Returns
+    False (and clears the cached session) if the session token is now
+    invalid/expired/revoked or the user's account was disabled since the
+    last check; True otherwise (including when a re-check wasn't due
+    yet — the cached session is still considered good)."""
+    last_validated = st.session_state.get(SESSION_LAST_VALIDATED_KEY)
+    if last_validated is not None:
+        age = (datetime.now(timezone.utc) - last_validated).total_seconds()
+        if age < SESSION_REVALIDATE_INTERVAL_SECONDS:
+            return True
+
+    token = st.session_state.get(SESSION_TOKEN_KEY)
+    user = auth_service.validate_session(engine, token) if token else None
+    if user is None:
+        st.session_state.pop(SESSION_USER_KEY, None)
+        st.session_state.pop(SESSION_TOKEN_KEY, None)
+        st.session_state.pop(SESSION_LAST_VALIDATED_KEY, None)
+        _clear_session_cookie()
+        return False
+
+    # Refresh the cached user row too, not just the timestamp — a role
+    # change (e.g. is_admin) or a display-name update should take effect
+    # within one revalidation window, not only at next login.
+    st.session_state[SESSION_USER_KEY] = user
+    st.session_state[SESSION_LAST_VALIDATED_KEY] = datetime.now(timezone.utc)
     return True
 
 
@@ -312,6 +362,13 @@ def require_auth(engine: Engine) -> dict:
     invite_token = query_params.get("invite")
 
     user = current_user()
+    if user is not None and not _revalidate_if_due(engine):
+        # Session was revoked/expired, or the account was disabled, since
+        # the last periodic check — see SESSION_REVALIDATE_INTERVAL_
+        # SECONDS' own docstring. Treat exactly like never having been
+        # logged in, so the normal login/cookie-restore path below runs.
+        user = None
+
     if user is None and not invite_token:
         # Only try to restore from a cookie on the plain login path — an
         # invite link always means "someone is deliberately registering a
@@ -349,3 +406,4 @@ def logout(engine: Engine) -> None:
     _clear_session_cookie()
     st.session_state.pop(SESSION_USER_KEY, None)
     st.session_state.pop(SESSION_TOKEN_KEY, None)
+    st.session_state.pop(SESSION_LAST_VALIDATED_KEY, None)

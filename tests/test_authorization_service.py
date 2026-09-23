@@ -107,7 +107,7 @@ def test_manual_approval_places_exactly_one_order_and_marks_executed():
     broker = _FakeBroker()
     execution_service = ExecutionService(broker, engine, execution_mode="demo", user_id=1)
 
-    result = _run(auth_service.authorize(engine, broker, execution_service, intent_id, "APPROVED"))
+    result = _run(auth_service.authorize(engine, broker, execution_service, intent_id, "APPROVED", calling_user_id=1))
     assert result.decision == "APPROVED"
     assert result.order_result.status == "FILLED"
     assert len(broker.place_order_calls) == 1
@@ -127,8 +127,8 @@ def test_concurrent_authorize_calls_place_exactly_one_order():
 
     async def _race():
         return await asyncio.gather(
-            auth_service.authorize(engine, broker, execution_service, intent_id, "APPROVED"),
-            auth_service.authorize(engine, broker, execution_service, intent_id, "APPROVED"),
+            auth_service.authorize(engine, broker, execution_service, intent_id, "APPROVED", calling_user_id=1),
+            auth_service.authorize(engine, broker, execution_service, intent_id, "APPROVED", calling_user_id=1),
         )
 
     results = _run(_race())
@@ -154,7 +154,7 @@ def test_crypto_fractional_size_not_truncated():
         return await orig_execute(**kwargs)
 
     execution_service.execute = _capture_execute
-    result = _run(auth_service.authorize(engine, broker, execution_service, intent_id, "APPROVED"))
+    result = _run(auth_service.authorize(engine, broker, execution_service, intent_id, "APPROVED", calling_user_id=1))
     assert result.decision == "APPROVED"
     assert captured["size_units"] == 0.25  # NOT int(0.25) == 0
 
@@ -169,7 +169,7 @@ def test_manual_kill_switch_blocks_submission_even_with_stale_approved_risk():
     broker = _FakeBroker()
     execution_service = ExecutionService(broker, engine, execution_mode="demo", user_id=1)
 
-    result = _run(auth_service.authorize(engine, broker, execution_service, intent_id, "APPROVED"))
+    result = _run(auth_service.authorize(engine, broker, execution_service, intent_id, "APPROVED", calling_user_id=1))
     assert result.decision == "APPROVED"
     assert result.order_result is None
     assert "no longer clears" in result.detail
@@ -208,8 +208,33 @@ def test_paper_broker_authorize_does_not_crash_building_fresh_risk_check():
     ])
     execution_service = ExecutionService(broker, engine, execution_mode="paper", user_id=1)
 
-    result = _run(auth_service.authorize(engine, broker, execution_service, intent_id, "APPROVED"))
+    result = _run(auth_service.authorize(engine, broker, execution_service, intent_id, "APPROVED", calling_user_id=1))
     assert result.decision == "APPROVED"  # did not raise AttributeError
+
+
+def test_authorize_refuses_a_different_users_intent():
+    # Real bug found 2026-09-22 (external review, P0-05): no ownership
+    # check at all -- trade_intent_id is a sequential, guessable integer
+    # primary key, and the only thing stopping user A from authorizing
+    # user B's pending trade was the DASHBOARD never showing user A that
+    # id, not any server-side enforcement. Worse: the broker/execution_
+    # service passed in belong to whoever is CALLING (their OWN broker
+    # credentials), so a mismatch would place a real order on the WRONG
+    # user's account, sized/directed by another user's private signal.
+    engine = _fresh_engine()
+    intent_id = _seed_intent(engine)  # owned by user_id=1
+    broker = _FakeBroker()
+    execution_service = ExecutionService(broker, engine, execution_mode="demo", user_id=2)
+
+    import pytest
+    with pytest.raises(PermissionError):
+        _run(auth_service.authorize(engine, broker, execution_service, intent_id, "APPROVED", calling_user_id=2))
+    assert len(broker.place_order_calls) == 0
+
+    with engine.connect() as conn:
+        row = conn.execute(select(trade_intents_table).where(trade_intents_table.c.id == intent_id)).mappings().first()
+    # Untouched -- the rejected attempt didn't even claim it.
+    assert row["status"] == "AWAITING_AUTHORIZATION"
 
 
 def test_reject_does_not_touch_broker():
@@ -218,7 +243,7 @@ def test_reject_does_not_touch_broker():
     broker = _FakeBroker()
     execution_service = ExecutionService(broker, engine, execution_mode="demo", user_id=1)
 
-    result = _run(auth_service.authorize(engine, broker, execution_service, intent_id, "REJECTED"))
+    result = _run(auth_service.authorize(engine, broker, execution_service, intent_id, "REJECTED", calling_user_id=1))
     assert result.decision == "REJECTED"
     assert len(broker.place_order_calls) == 0
     with engine.connect() as conn:

@@ -777,7 +777,7 @@ async def _do_authorize(mode: str, trade_intent_id: int, decision: str, notes: s
             # construction (see src/broker/alpaca.py's module docstring).
             service = ExecutionService(broker, engine, execution_mode="demo", user_id=CURRENT_USER_ID)
             return await auth_service.authorize(
-                engine, broker, service, trade_intent_id, decision,
+                engine, broker, service, trade_intent_id, decision, CURRENT_USER_ID,
                 authorized_by="dashboard_user", notes=notes,
             )
 
@@ -785,13 +785,13 @@ async def _do_authorize(mode: str, trade_intent_id: int, decision: str, notes: s
         async with PaperBroker(settings, engine, user_id=CURRENT_USER_ID) as broker:
             service = ExecutionService(broker, engine, execution_mode="paper", user_id=CURRENT_USER_ID)
             return await auth_service.authorize(
-                engine, broker, service, trade_intent_id, decision,
+                engine, broker, service, trade_intent_id, decision, CURRENT_USER_ID,
                 authorized_by="dashboard_user", notes=notes,
             )
     async with OandaBroker(settings) as broker:
         service = ExecutionService(broker, engine, execution_mode="demo", user_id=CURRENT_USER_ID)
         return await auth_service.authorize(
-            engine, broker, service, trade_intent_id, decision,
+            engine, broker, service, trade_intent_id, decision, CURRENT_USER_ID,
             authorized_by="dashboard_user", notes=notes,
         )
 

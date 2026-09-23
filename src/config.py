@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -57,18 +58,34 @@ def _validate_environment(environment: str) -> None:
         )
 
 
+_ALPACA_PAPER_HOST = "paper-api.alpaca.markets"
+
+
 def _validate_alpaca_environment(base_url: str | None) -> None:
     """Same safety rail as _validate_environment(), for Alpaca: hard-refuse
     anything that isn't Alpaca's paper-trading host, so nothing can
     accidentally point this system at real-money live trading — the same
     "paper/demo only until extended live-paper evaluation" policy applies
-    to every broker here, not just OANDA."""
-    if base_url and not base_url.rstrip("/").startswith("https://paper-api.alpaca.markets"):
+    to every broker here, not just OANDA.
+
+    Real bug found 2026-09-22 (external review, P0-05): this used to be a
+    plain str.startswith("https://paper-api.alpaca.markets") check — a
+    classic prefix-match validation bypass. "https://paper-api.alpaca.
+    markets.evil.com" (an attacker-controlled subdomain) ALSO starts with
+    that exact string, since ".evil.com" is just appended after it, and
+    would have passed. Fixed to an exact scheme+hostname match via
+    urllib.parse, which correctly rejects a look-alike host regardless of
+    what's appended after the real domain — the only thing allowed to
+    vary is an optional path suffix (e.g. "/v2")."""
+    if not base_url:
+        return
+    parsed = urlparse(base_url)
+    if parsed.scheme != "https" or parsed.hostname != _ALPACA_PAPER_HOST:
         raise RuntimeError(
             f"ALPACA_BASE_URL is set to {base_url!r}, not Alpaca's paper-trading host. "
             "This system is paper/demo only until it has passed backtesting, "
             "walk-forward testing and an extended live-paper evaluation. "
-            "Refusing to start against anything but https://paper-api.alpaca.markets."
+            f"Refusing to start against anything but https://{_ALPACA_PAPER_HOST}."
         )
 
 
