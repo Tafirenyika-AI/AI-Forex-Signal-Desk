@@ -86,6 +86,22 @@ async def sync_outcomes(engine: Engine, broker: OandaBroker, user_id: int, execu
 
                 opening_units = int(opening_txn["units"]) if opening_txn else -int(closed["units"])
                 realized_pl = float(closed["realizedPL"])
+                # Real bug found 2026-09-22 (external review, P1-01, T11):
+                # this used to report abs(opening_units) here — the FULL
+                # original position size — for every closing leg of a
+                # trade, not the quantity actually closed IN THIS closing
+                # transaction. A trade opened at 1,000 units that partially
+                # reduces by 400 then finally closes the remaining 600
+                # produced two trade_outcomes rows (already correctly
+                # separate — see this module's 2026-09-05 note on the
+                # closed_at-inclusive unique constraint) that BOTH claimed
+                # "1,000 units", even though each leg's own realized_pl_usd
+                # (from closed["realizedPL"], already correctly per-leg)
+                # only ever applied to a fraction of that. closed["units"]
+                # is OANDA's own per-transaction closed quantity (signed
+                # opposite the position's direction) — its absolute value
+                # is exactly the right number for THIS leg.
+                closed_units = abs(float(closed["units"]))
 
                 stmt = insert(trade_outcomes_table).values(
                     user_id=user_id,
@@ -95,7 +111,7 @@ async def sync_outcomes(engine: Engine, broker: OandaBroker, user_id: int, execu
                     execution_mode=execution_mode,
                     instrument=txn["instrument"],
                     action="BUY" if opening_units > 0 else "SELL",
-                    units=abs(opening_units),
+                    units=closed_units,
                     # Honestly None when the opening fill can't be resolved
                     # (real gap found live 2026-08-18: OANDA's transaction
                     # ledger doesn't always retain it — confirmed even a
