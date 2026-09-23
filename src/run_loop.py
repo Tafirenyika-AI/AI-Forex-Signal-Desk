@@ -483,6 +483,11 @@ def compute_exposure(
     positions_raw: list[dict], broker_kind: BrokerKind, execution_mode: str,
     usd_rates: dict[str, float] | None = None,
 ) -> tuple[int, dict[str, float]]:
+    """True USD notional per direction bucket — see
+    risk_governor.usd_notional_per_unit's docstring for the real bug this
+    replaced (this used to call usd_value_per_unit, a *different* quantity
+    — P&L-per-price-move, not position value — that only coincides with
+    true notional for quote-is-USD FX pairs)."""
     open_count = 0
     exposure = {"long_usd": 0.0, "short_usd": 0.0, "equity_long": 0.0, "equity_short": 0.0,
                 "crypto_long": 0.0, "crypto_short": 0.0}
@@ -493,11 +498,91 @@ def compute_exposure(
         if key == "no_usd_leg":
             continue  # no direct USD-denominated exposure to attribute — see governor.py's own docstring
         try:
-            notional = abs(net_units) * risk_governor.usd_value_per_unit(instrument, ref_price or 1.0, usd_rates)
+            notional = abs(net_units) * risk_governor.usd_notional_per_unit(instrument, ref_price or 1.0, usd_rates)
         except ValueError:
             notional = 0.0
         exposure[key] = exposure.get(key, 0.0) + notional
     return open_count, exposure
+
+
+async def compute_correlated_stop_risk(
+    broker, broker_kind: BrokerKind, positions_raw: list[dict], execution_mode: str,
+    usd_rates: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """Aggregate USD risk-at-stop per same-USD-direction bucket — the
+    dollar loss that would be realized if every open position in that
+    bucket hit its current stop simultaneously.
+
+    Added 2026-09-22 (external review, P0-01) to replace notional as what
+    the risk governor's correlation/concentration gate measures
+    (MAX_CORRELATED_EXPOSURE_PCT in src/risk/governor.py). Notional was
+    the wrong unit for a correlation cap: it scales with instrument
+    leverage/price in a way risk-at-stop doesn't, so a flat %-of-NAV
+    notional threshold either does nothing (comparing a few hundred
+    dollars of FX/equity notional-as-computed-by-the-old-bug against a
+    percent of NAV) or blocks nearly every real trade (once notional is
+    computed correctly — a single leveraged FX position is routinely
+    several times NAV, see MAX_EQUITY_CRYPTO_NOTIONAL_PCT's own docstring
+    on realistic FX notional). Risk-at-stop is already the unit every
+    OTHER limit in governor.py uses (RISK_PER_TRADE_PCT, DAILY_LOSS_
+    LIMIT_PCT, WEEKLY_LOSS_LIMIT_PCT), so a %-of-NAV cap on it is
+    dimensionally consistent regardless of leverage.
+
+    A bucket containing any position with NO live protective stop is
+    reported as float('inf') — its true worst-case loss is unbounded, so
+    the gate that consumes this (a finite-threshold comparison) fails
+    CLOSED for that bucket rather than silently treating an unprotected
+    position's contribution as zero. This is deliberately conservative:
+    it will block a new same-direction trade whenever an existing one in
+    that direction is unprotected, which is exactly the situation P0-04
+    (broker reconciliation / protective-order verification) needs to
+    surface and fix, not paper over here.
+
+    One extra broker call per open position for Alpaca (bounded by
+    MAX_CONCURRENT_POSITIONS=3, so at most 3 calls); zero extra calls for
+    OANDA (open_trades() already returns each trade's live stopLossOrder
+    inline, the same call Phase D2's trailing-stop step already needs)."""
+    risk: dict[str, float] = {}
+
+    def add(key: str, amount: float) -> None:
+        current = risk.get(key, 0.0)
+        risk[key] = float("inf") if (current == float("inf") or amount == float("inf")) else current + amount
+
+    if broker_kind == "oanda":
+        for trade in await broker.open_trades():
+            units = float(trade.get("currentUnits", "0") or 0)
+            if units == 0:
+                continue
+            instrument = trade["instrument"]
+            action = "BUY" if units > 0 else "SELL"
+            key = risk_governor.usd_direction_of_trade(instrument, action)
+            if key == "no_usd_leg":
+                continue
+            entry = float(trade.get("price") or 0)
+            stop_order = trade.get("stopLossOrder")
+            stop_price_raw = stop_order.get("price") if stop_order else None
+            if not stop_price_raw:
+                add(key, float("inf"))
+                continue
+            try:
+                per_unit = risk_governor.usd_value_per_unit(instrument, entry or 1.0, usd_rates)
+            except ValueError:
+                add(key, float("inf"))
+                continue
+            add(key, abs(entry - float(stop_price_raw)) * abs(units) * per_unit)
+    else:  # alpaca — equities and crypto, one position per symbol
+        for instrument, net_units, ref_price in _normalized_positions(positions_raw, broker_kind, execution_mode):
+            action = "BUY" if net_units > 0 else "SELL"
+            key = risk_governor.usd_direction_of_trade(instrument, action)
+            if key == "no_usd_leg":
+                continue
+            stop_price = await broker.get_position_stop_price(instrument)
+            if stop_price is None:
+                add(key, float("inf"))
+                continue
+            add(key, abs(ref_price - stop_price) * abs(net_units))
+
+    return risk
 
 
 async def _evaluate_one_horizon(
@@ -538,6 +623,7 @@ async def _evaluate_one_horizon(
     economic_surprises: list[dict],
     challengers: list[Challenger],
     usd_rates: dict[str, float],
+    stop_risk: dict[str, float],
 ) -> None:
     df = pd.DataFrame([dataclasses.asdict(c) for c in candles])
     featured = feature_ready_frame(df)
@@ -739,6 +825,7 @@ async def _evaluate_one_horizon(
         account_nav=account_state.nav,
         open_position_count=open_count,
         open_positions_usd_direction=exposure,
+        open_positions_stop_risk_usd=stop_risk,
         component_scores=component_scores,
         calendar_covers_currency=effective_calendar_coverage,
         upcoming_tier1_event_within_lockout=upcoming_tier1_event,
@@ -863,6 +950,7 @@ async def evaluate_pair(
     exposure: dict[str, float],
     reconciliation_ok: bool,
     usd_rates: dict[str, float],
+    stop_risk: dict[str, float],
     horizon_configs: list[HorizonConfig] = HORIZON_CONFIGS,
 ) -> None:
     """Evaluates every configured horizon for one pair. Portfolio-wide state
@@ -962,6 +1050,7 @@ async def evaluate_pair(
             economic_surprises=economic_surprises,
             challengers=challengers,
             usd_rates=usd_rates,
+            stop_risk=stop_risk,
         )
 
 
@@ -982,6 +1071,7 @@ class BrokerCycleContext:
     exposure: dict[str, float]
     reconciliation_ok: bool
     usd_rates: dict[str, float]
+    stop_risk: dict[str, float]
 
 
 async def _build_broker_cycle_context(
@@ -1011,11 +1101,21 @@ async def _build_broker_cycle_context(
     account_state = await broker.account_state()
     positions_raw = await broker.positions()
     open_count, exposure = compute_exposure(positions_raw, broker_kind, exec_mode_for_broker, usd_rates)
+    # PaperBroker simulates fills against its own DB ledger, not a real
+    # broker-side protective order (see its positions()/place_order() —
+    # no per-position "current live stop" to query, unlike a real OANDA/
+    # Alpaca account). Skipped entirely for it rather than faked; the
+    # correlation gate falls back to treating those buckets as 0 risk,
+    # same practical status this gate has always had in pure-paper mode.
+    stop_risk = (
+        {} if isinstance(broker, PaperBroker)
+        else await compute_correlated_stop_risk(broker, broker_kind, positions_raw, exec_mode_for_broker, usd_rates)
+    )
     reconciliation_ok = await execution_service.reconcile()
     return BrokerCycleContext(
         broker=broker, execution_service=execution_service, price_models=price_models,
         account_state=account_state, open_count=open_count, exposure=exposure,
-        reconciliation_ok=reconciliation_ok, usd_rates=usd_rates,
+        reconciliation_ok=reconciliation_ok, usd_rates=usd_rates, stop_risk=stop_risk,
     )
 
 
@@ -1138,6 +1238,7 @@ async def _run_once_for_user(
                     exposure=ctx.exposure,
                     reconciliation_ok=ctx.reconciliation_ok,
                     usd_rates=ctx.usd_rates,
+                    stop_risk=ctx.stop_risk,
                 )
     finally:
         for ctx in broker_contexts.values():

@@ -43,8 +43,20 @@ RISK_PER_TRADE_PCT = 0.01  # 1% of equity baseline
 RISK_PER_TRADE_CEILING_PCT = 0.03  # up to 3% for a maximally confident signal
 DAILY_LOSS_LIMIT_PCT = 0.015  # 1.5%, sec. 8 "example research setting"
 MAX_CONCURRENT_POSITIONS = 3
-MAX_CORRELATED_EXPOSURE_PCT = 0.05  # cap aggregate same-USD-direction notional / NAV
-# Hard ceiling on total same-direction notional in equities/crypto, as a
+# Cap aggregate RISK-AT-STOP (not notional — see the correlation gate in
+# evaluate() below and src/run_loop.py's compute_correlated_stop_risk) of
+# same-USD-direction open positions, as a fraction of NAV. Changed from a
+# notional basis 2026-09-22 (external review, P0-01): notional was the
+# wrong unit for a correlation cap — it scales with instrument leverage/
+# price in a way risk-at-stop doesn't, so a flat %-of-NAV notional
+# threshold either does nothing or blocks nearly every real trade once
+# notional is computed correctly (a single leveraged FX position is
+# routinely several times NAV — see MAX_EQUITY_CRYPTO_NOTIONAL_PCT's own
+# comment below). 5% sits between one maxed-out single trade (3% ceiling)
+# and the daily loss limit (1.5%) — a real, live-consequential number;
+# revisit if it proves too tight/loose once observed against real data.
+MAX_CORRELATED_EXPOSURE_PCT = 0.05
+# Hard ceiling on total same-direction NOTIONAL in equities/crypto, as a
 # fraction of NAV — i.e. no leverage: an equity/crypto position may never
 # be bigger than the account itself (user-approved 2026-09-18). Found live:
 # sizing is purely risk-per-trade (1-3% of equity / per-share stop
@@ -55,6 +67,18 @@ MAX_CORRELATED_EXPOSURE_PCT = 0.05  # cap aggregate same-USD-direction notional 
 # NOT applied to forex: OANDA is leveraged by design (a 1% risk / 30-pip
 # stop is routinely several times NAV in notional), so a 100% cap there
 # would gut every forex trade — a different, much larger policy change.
+#
+# Real gap found 2026-09-22 (external review): this was ALSO silently
+# broken until the same fix — `already_open` below is fed by compute_
+# exposure(), which used to compute equity/crypto "notional" as a raw
+# SHARE COUNT (see usd_notional_per_unit's docstring), compared against a
+# genuine DOLLAR headroom. A second same-direction position's contribution
+# was undercounted by orders of magnitude, so this ceiling could not
+# actually stop cumulative equity/crypto exposure from exceeding NAV
+# across multiple positions — only a single trade's own per-trade cap
+# (line ~597 below) was ever real protection. Fixed by the same notional
+# correction; MAX_EQUITY_CRYPTO_NOTIONAL_PCT's own value (100%) is
+# unchanged — only the number it was being compared against was wrong.
 MAX_EQUITY_CRYPTO_NOTIONAL_PCT = 1.0
 
 # --- sec. 7 gates (defaults) ---
@@ -240,6 +264,47 @@ def usd_value_per_unit(pair: str, current_price: float, usd_rates: dict[str, flo
     )
 
 
+def usd_notional_per_unit(pair: str, current_price: float, usd_rates: dict[str, float] | None = None) -> float:
+    """USD value of exactly 1 unit of POSITION (1 share, 1 lot, 1 unit of
+    base currency) — for exposure/concentration/no-leverage-ceiling math,
+    NOT for stop-distance risk sizing (see usd_value_per_unit above, a
+    different quantity that happens to coincide with this one only for
+    quote-is-USD pairs).
+
+    Real bug found live 2026-09-22 (external review): src/run_loop.py's
+    compute_exposure() was calling usd_value_per_unit() for this purpose,
+    which is wrong for every pair/asset where the two quantities diverge:
+      - USD_JPY at 150: usd_value_per_unit=1/150=0.0067 (correct for "P&L
+        per 1-pip move"), but 1 unit of USD_JPY IS 1 USD (base=USD) — true
+        notional-per-unit is 1.0, not 0.0067. 100,000 units priced this
+        way came out to "$666.67 exposure" instead of the real $100,000.
+      - A $200 equity share: usd_value_per_unit=1.0 unconditionally (a $1
+        move = $1 P&L per share, correct for that question) but the
+        SHARE ITSELF is worth $200, not $1. 100 shares came out to "$100
+        exposure" instead of the real $20,000 — meaning MAX_EQUITY_
+        CRYPTO_NOTIONAL_PCT's headroom check (governor.evaluate below) was
+        comparing a raw SHARE COUNT against a DOLLAR headroom and could
+        never meaningfully bind once a second same-direction position was
+        already open, silently defeating the no-leverage ceiling it's
+        supposed to enforce.
+    Crypto has the identical equity-style bug (usd_value_per_unit is 1.0
+    unconditionally for it too, but 1 unit of BTC/USD is worth `price`
+    dollars, not $1)."""
+    if "/" in pair or "_" not in pair:  # crypto (BASE/USD) or equity ticker
+        return current_price
+    base, quote = pair.split("_")
+    if quote == "USD":  # e.g. EUR_USD: 1 unit = 1 EUR = current_price USD
+        return current_price
+    if base == "USD":  # e.g. USD_JPY: 1 unit = 1 USD
+        return 1.0
+    if usd_rates and base in usd_rates:  # cross pair: 1 unit = 1 unit of BASE currency
+        return usd_rates[base]
+    raise ValueError(
+        f"usd_notional_per_unit: {pair} has no USD leg and no usd_rates entry for {base} — "
+        "cannot price notional for this pair without a live conversion rate"
+    )
+
+
 @dataclass
 class GateResult:
     name: str
@@ -379,6 +444,7 @@ def evaluate(
     calendar_covers_currency: bool,
     upcoming_tier1_event_within_lockout: bool,
     reconciliation_ok: bool,
+    open_positions_stop_risk_usd: dict[str, float] | None = None,  # {"long_usd": $ risk-at-stop, ...}; inf = a position in that bucket is unprotected
     regime: str | None = None,
     reference_price: float | None = None,
     usd_rates: dict[str, float] | None = None,
@@ -502,12 +568,26 @@ def evaluate(
         # bucket (the old bug this replaced miscounted it as one).
         gate("correlation", True, "no direct USD leg — correlation cap doesn't apply to this pair")
     else:
-        projected_exposure = open_positions_usd_direction.get(usd_direction_key, 0.0)
-        correlation_ok = (projected_exposure / account_nav if account_nav else 0.0) < MAX_CORRELATED_EXPOSURE_PCT
-        gate("correlation", correlation_ok,
-             f"{usd_direction_key} exposure {projected_exposure:.0f} / NAV {account_nav:.0f}")
+        # Measures aggregate RISK-AT-STOP, not notional (changed 2026-09-22,
+        # external review P0-01) — the dollar loss if every open position
+        # in this direction bucket hit its current stop simultaneously,
+        # same unit as RISK_PER_TRADE_PCT/DAILY_LOSS_LIMIT_PCT/WEEKLY_
+        # LOSS_LIMIT_PCT above, so a %-of-NAV cap on it stays meaningful
+        # regardless of an instrument's leverage/price (notional doesn't:
+        # see src/run_loop.py's compute_correlated_stop_risk docstring for
+        # the real bug this replaced). float('inf') means a position in
+        # this bucket currently has no live protective stop — fails closed
+        # rather than silently under-counting unbounded risk as zero.
+        projected_risk = (open_positions_stop_risk_usd or {}).get(usd_direction_key, 0.0)
+        correlation_ok = (projected_risk / account_nav if account_nav else 0.0) < MAX_CORRELATED_EXPOSURE_PCT
+        detail = (
+            f"{usd_direction_key} unprotected position in this bucket — risk unbounded"
+            if projected_risk == float("inf")
+            else f"{usd_direction_key} risk-at-stop ${projected_risk:.0f} / NAV ${account_nav:.0f}"
+        )
+        gate("correlation", correlation_ok, detail)
         if not correlation_ok:
-            return RiskDecision(False, "correlated USD exposure cap reached", None, gates)
+            return RiskDecision(False, "correlated risk-at-stop cap reached", None, gates)
 
     # --- risk sizing gate ---
     if not stop_distance or stop_distance <= 0:

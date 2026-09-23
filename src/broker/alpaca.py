@@ -442,6 +442,33 @@ class AlpacaBroker(BrokerAdapter):
         order = await self._find_crypto_stop_order(instrument)
         return float(order["stop_price"]) if order else None
 
+    async def get_equity_stop_price(self, instrument: str) -> float | None:
+        """The CURRENT live stop price for an equity position's bracket
+        stop-loss leg (a plain type="stop" child order, distinct from
+        crypto's type="stop_limit" — see place_order's bracket body). None
+        if there's no live stop order for this instrument (unprotected, or
+        no open position at all) — added 2026-09-22 for the risk governor's
+        correlation gate (src/run_loop.py's stop-risk aggregation), which
+        needs this to compute an accurate risk-at-stop, the same way
+        get_crypto_stop_price already served the D2 trailing-stop step."""
+        open_orders = await self._request(
+            self._trading_client, "GET", "/orders",
+            params={"status": "open", "symbols": instrument},
+        )
+        order = next(
+            (o for o in open_orders if o.get("type") == "stop" and o.get("symbol") == instrument),
+            None,
+        )
+        return float(order["stop_price"]) if order else None
+
+    async def get_position_stop_price(self, instrument: str) -> float | None:
+        """Broker-agnostic-at-the-call-site dispatch to whichever of the two
+        above applies — crypto and equity stops live in differently-typed
+        orders (see each method's docstring)."""
+        if asset_class_for(instrument) == "crypto":
+            return await self.get_crypto_stop_price(instrument)
+        return await self.get_equity_stop_price(instrument)
+
     async def modify_stop_loss(self, instrument: str, new_stop_price: float) -> None:
         """Phase D2 (trailing stops) — crypto only. Equities are NOT
         supported: canceling one leg of a bracket order cancels the WHOLE
