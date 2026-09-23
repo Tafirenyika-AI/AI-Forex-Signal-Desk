@@ -19,12 +19,16 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.engine import Engine
 
 from src.broker.base import OrderResult
+from src.broker.registry import broker_kind_for
 from src.data.db import authorizations as authorizations_table
 from src.data.db import predictions as predictions_table
 from src.data.db import risk_decisions as risk_decisions_table
 from src.data.db import trade_intents as trade_intents_table
 from src.risk.governor import PRICE_DRIFT_STOP_RATIO
+from src.risk import governor as risk_governor
+from src.execution.paper_broker import PaperBroker
 from src.execution.service import ExecutionService
+from src.run_loop import _build_usd_conversion_rates, compute_correlated_stop_risk, compute_exposure
 
 # A signal is only trustworthy for roughly as long as its own stated
 # horizon — the regime/price/macro/news snapshot it was built from goes
@@ -207,11 +211,38 @@ async def authorize(
         raise ValueError(f"No trade_intent with id={trade_intent_id}")
     intent = _row_to_dict(dict(intent))
 
-    if intent["status"] != "AWAITING_AUTHORIZATION":
+    # Real bug found 2026-09-22 (external review, P0-03, T10): this used to
+    # be a plain read-then-later-write with no atomic claim in between —
+    # two concurrent authorize() calls for the SAME trade_intent_id (a
+    # double-click, two open browser tabs, a retry racing the original)
+    # could BOTH read status=="AWAITING_AUTHORIZATION" and BOTH proceed to
+    # place a real broker order, since the status update only happened at
+    # the very end, after the broker call. An UPDATE ... WHERE status =
+    # 'AWAITING_AUTHORIZATION' is atomic at the database level (exactly
+    # one concurrent caller's UPDATE can match the WHERE clause and change
+    # a row still in that state) — whichever call's rowcount comes back 1
+    # has genuinely won the claim; every other concurrent call gets 0 and
+    # returns SKIPPED immediately, never touching the broker. "AUTHORIZING"
+    # is a new transient status so a claimed-but-not-yet-resolved intent
+    # correctly disappears from list_pending() (which only shows
+    # AWAITING_AUTHORIZATION) while being processed, rather than looking
+    # like it's still waiting for a decision.
+    with engine.begin() as conn:
+        claim = conn.execute(
+            update(trade_intents_table)
+            .where(
+                trade_intents_table.c.id == trade_intent_id,
+                trade_intents_table.c.status == "AWAITING_AUTHORIZATION",
+            )
+            .values(status="AUTHORIZING")
+        )
+        claimed = claim.rowcount == 1
+    if not claimed:
         return AuthorizationResult(
             decision="SKIPPED",
             order_result=None,
-            detail=f"intent status is '{intent['status']}', not AWAITING_AUTHORIZATION — already handled",
+            detail=f"intent status is '{intent['status']}', not AWAITING_AUTHORIZATION — already handled "
+                   "(or another concurrent request just claimed it)",
         )
 
     if decision == "REJECTED":
@@ -235,6 +266,19 @@ async def authorize(
             )
         return AuthorizationResult("REJECTED", None, "Rejected by user; no order sent.")
 
+    def _release_claim() -> None:
+        """Reverts the AUTHORIZING claim back to AWAITING_AUTHORIZATION —
+        used only for recoverable pre-broker-call failures (no live price,
+        price drifted, fresh risk re-check no longer clears) so the intent
+        remains retryable next cycle/click, same as it always has been,
+        rather than getting stuck in a transient state forever."""
+        with engine.begin() as conn:
+            conn.execute(
+                update(trade_intents_table)
+                .where(trade_intents_table.c.id == trade_intent_id)
+                .values(status="AWAITING_AUTHORIZATION")
+            )
+
     with engine.connect() as conn:
         risk = conn.execute(
             select(risk_decisions_table)
@@ -243,10 +287,20 @@ async def authorize(
         ).mappings().first()
     if risk is None or not risk["approved"] or not risk["size_units"]:
         raise ValueError(f"trade_intent {trade_intent_id} has no approved, sized risk_decision")
-    size_units = int(risk["size_units"])
+    # Real bug found 2026-09-22 (external review, P0-03): unconditional
+    # int() truncated ANY fractional crypto size to a whole number —
+    # risk_governor.evaluate()'s own sizing gate deliberately keeps crypto
+    # fractional (RiskDecision.size_units' own docstring: "a whole BTC/ETH
+    # costs tens of thousands of dollars"), so a real 0.25 BTC approval
+    # either silently sent an 0-unit order (int(0.25) == 0, rejected or a
+    # no-op at the broker) or a wildly wrong quantity for anything >= 1.0.
+    # Forex/equities still truncate to a whole unit/share, matching how
+    # they actually trade.
+    size_units = risk["size_units"] if "/" in intent["instrument"] else int(risk["size_units"])
 
     prices = await broker.get_current_prices([intent["instrument"]])
     if not prices:
+        _release_claim()
         return AuthorizationResult(
             "APPROVED", None,
             "Could not fetch a current price — order NOT sent. Try again.",
@@ -265,6 +319,7 @@ async def authorize(
     if reference_price is not None and stop_distance:
         drift = abs(current_price - reference_price)
         if drift > PRICE_DRIFT_STOP_RATIO * stop_distance:
+            _release_claim()
             return AuthorizationResult(
                 "APPROVED", None,
                 f"Price drifted {drift:.5f} since the signal was generated "
@@ -272,6 +327,57 @@ async def authorize(
                 "order NOT sent. The setup this signal reasoned about may no longer hold; "
                 "wait for a fresh signal next cycle.",
             )
+
+    # Real bug found 2026-09-22 (external review, P0-03): everything above
+    # only re-checks whether the SIGNAL is still good (price drift); the
+    # ACCOUNT could have changed just as much in the meantime purely from
+    # OTHER trades — kill switch tripped, another position pushed past
+    # MAX_CONCURRENT_POSITIONS or the correlation cap — none of which used
+    # to be re-verified before sending an order built from a risk_decision
+    # that could be hours old. See risk_governor.revalidate_before_
+    # submission's own docstring for the full design rationale (including
+    # why it deliberately does NOT re-derive confidence-based sizing).
+    broker_kind = broker_kind_for(intent["instrument"])
+    is_paper = isinstance(broker, PaperBroker)
+    account_state = await broker.account_state()
+    positions_raw = await broker.positions()
+    # PaperBroker has no list_instruments() (it only ever simulates OANDA
+    # trades against its own DB ledger, never a real broker's instrument
+    # catalog — see its module docstring) — _build_usd_conversion_rates
+    # would raise AttributeError for it. Guarded the same way
+    # compute_correlated_stop_risk already is just below.
+    usd_rates = (
+        await _build_usd_conversion_rates(broker, [intent["instrument"]])
+        if broker_kind == "oanda" and not is_paper else {}
+    )
+    open_count, exposure = compute_exposure(positions_raw, broker_kind, execution_service.execution_mode, usd_rates)
+    stop_risk = (
+        {} if is_paper
+        else await compute_correlated_stop_risk(broker, broker_kind, positions_raw, execution_service.execution_mode, usd_rates)
+    )
+    reconciliation_ok = await execution_service.reconcile()
+    revalidation = risk_governor.revalidate_before_submission(
+        engine,
+        user_id=intent["user_id"],
+        instrument=intent["instrument"],
+        action=intent["action"],
+        account_nav=account_state.nav,
+        current_price=current_price,
+        open_position_count=open_count,
+        open_positions_usd_direction=exposure,
+        open_positions_stop_risk_usd=stop_risk,
+        approved_size_units=size_units,
+        reconciliation_ok=reconciliation_ok,
+        now=now,
+    )
+    if not revalidation.approved:
+        _release_claim()
+        return AuthorizationResult(
+            "APPROVED", None,
+            f"Cleared risk at signal time, but no longer clears at submission time: "
+            f"{revalidation.reason} — order NOT sent.",
+        )
+    size_units = revalidation.size_units
 
     tp_distance = intent["take_profit_distance"]
     if intent["action"] == "BUY":
@@ -281,12 +387,25 @@ async def authorize(
         stop_price = current_price + stop_distance if stop_distance else None
         target_price = current_price - tp_distance if tp_distance else None
 
+    # Real bug found 2026-09-22 (external review, P0-03): client_order_id
+    # was left to ExecutionService.execute()'s own default, which mints a
+    # FRESH random uuid EVERY call — so a retried/double-clicked
+    # authorize() for the same trade_intent_id got a different
+    # client_order_id each time, completely defeating BOTH this system's
+    # own orders_fills idempotency dedup (keyed on client_order_id) AND
+    # the broker's own native duplicate-client-order-id rejection (OANDA's
+    # clientExtensions.id, Alpaca's client_order_id — both reject/return-
+    # existing rather than double-submit on a genuine repeat). A stable
+    # ID derived from trade_intent_id (a unique DB primary key) makes
+    # every retry of the SAME intent collide at both layers instead of
+    # silently placing a second real order.
     result = await execution_service.execute(
         instrument=intent["instrument"],
         action=intent["action"],
         size_units=size_units,
         stop_loss_price=stop_price,
         take_profit_price=target_price,
+        client_order_id=f"intent-{trade_intent_id}",
     )
 
     new_status = "EXECUTED" if result.status == "FILLED" else "EXECUTION_FAILED"

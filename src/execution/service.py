@@ -36,6 +36,10 @@ class ExecutionService:
         self._execution_mode = execution_mode
         self._user_id = user_id
 
+    @property
+    def execution_mode(self) -> str:
+        return self._execution_mode
+
     async def execute(
         self,
         instrument: str,

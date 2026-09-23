@@ -894,18 +894,34 @@ async def _evaluate_one_horizon(
         if decision.action == "BUY"
         else price.mid - decision.take_profit_distance
     )
+    # Stable client_order_id (trade_intent_id is a unique DB primary key) —
+    # same fix and reasoning as authorization/service.py's authorize()
+    # (P0-03, 2026-09-22): a fresh random default would defeat both this
+    # system's own orders_fills idempotency dedup AND the broker's own
+    # native duplicate-client-order-id protection if this trade_intent
+    # were ever evaluated twice (e.g. overlapping scheduled runs).
     result = await execution_service.execute(
         instrument=pair,
         action=decision.action,
         size_units=risk_decision.size_units,
         stop_loss_price=stop_price,
         take_profit_price=target_price,
+        client_order_id=f"intent-{trade_intent_id}",
     )
+    # Real bug found 2026-09-22 (external review, P0-03): this used to
+    # unconditionally set status="AUTO_EXECUTED" regardless of what the
+    # broker actually returned — a FAILED or REJECTED order (result.status
+    # starting "ERROR:..." from ExecutionService's own fail-closed
+    # exception handling, or a broker-side rejection) still showed as
+    # "AUTO_EXECUTED" in the dashboard/audit trail, indistinguishable from
+    # a real fill. Same FILLED-vs-anything-else branching authorize()'s
+    # manual path already correctly does.
+    final_status = "AUTO_EXECUTED" if result.status == "FILLED" else "AUTO_EXECUTION_FAILED"
     with engine.begin() as conn:
         conn.execute(
             update(trade_intents_table)
             .where(trade_intents_table.c.id == trade_intent_id)
-            .values(status="AUTO_EXECUTED", execution_mode=execution_mode)
+            .values(status=final_status, execution_mode=execution_mode)
         )
         # Same audit trail an authorized trade gets, just a different actor —
         # this is also the only link the outcome tracker (src/outcomes/) has

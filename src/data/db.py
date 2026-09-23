@@ -282,7 +282,10 @@ trade_intents = Table(
     Column("data_freshness_json", Text, nullable=True),
     Column("explanation", Text, nullable=True),
     # PROPOSED -> RISK_REJECTED | AWAITING_AUTHORIZATION -> AUTHORIZED_EXECUTED
-    # | REJECTED_BY_USER | EXECUTION_FAILED | EXPIRED
+    # | REJECTED_BY_USER | EXECUTION_FAILED | EXPIRED | AUTO_EXECUTED
+    # | AUTO_EXECUTION_FAILED (the last two: --auto-execute path only,
+    # branched on the broker's actual result status since 2026-09-22 —
+    # see run_loop.py's evaluate_pair)
     Column("status", String, nullable=False, default="PROPOSED"),
     Column("execution_mode", String, nullable=True),  # paper / demo; set once risk-approved
     Column("reference_price", Float, nullable=True),  # mid price when the signal was generated

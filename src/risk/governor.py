@@ -807,3 +807,137 @@ def evaluate(
         return RiskDecision(False, "computed size is zero", None, gates)
 
     return RiskDecision(True, "approved", size_units, gates)
+
+
+def revalidate_before_submission(
+    engine: Engine,
+    *,
+    user_id: int,
+    instrument: str,
+    action: str,
+    account_nav: float,
+    current_price: float,
+    open_position_count: int,
+    open_positions_usd_direction: dict[str, float],
+    open_positions_stop_risk_usd: dict[str, float] | None,
+    approved_size_units: float,
+    reconciliation_ok: bool,
+    now: datetime | None = None,
+) -> RiskDecision:
+    """Re-checks the PORTFOLIO-STATE-dependent gates immediately before a
+    manually-approved order is actually sent (external review, P0-03,
+    2026-09-22): kill switch (manual/daily/weekly), max concurrent
+    positions, correlated risk-at-stop, and the equity/crypto no-leverage
+    notional ceiling — all evaluated against CURRENT account state, not
+    the state that was current when evaluate() originally approved and
+    sized this trade at signal-generation time (which can be up to
+    DEFAULT_EXPIRY_SECONDS/HORIZON_TO_SECONDS old — see src/authorization/
+    service.py's own constants — plenty of time for other trades to move
+    the account meaningfully).
+
+    Real bug this replaces: authorize() used to send the ORIGINAL,
+    possibly-hours-old risk_decision's size straight to the broker with NO
+    re-check at all beyond a price-drift guard — a trade could be sent
+    even though the kill switch had since tripped, or two other positions
+    had since pushed past MAX_CONCURRENT_POSITIONS or the correlation cap.
+
+    Deliberately does NOT re-derive confidence/regime/track-record sizing
+    the way evaluate() does — reusing evaluate() wholesale here would mean
+    feeding it placeholder confidence/component_scores to bypass the
+    signal-quality gates (which aren't being re-verified — see module
+    note below), and confidence ALSO drives evaluate()'s own sizing
+    multiplier, so a placeholder value would silently RE-SIZE a trade the
+    human already reviewed and approved at a specific number. Instead,
+    `approved_size_units` is a CEILING this can only clamp DOWN from,
+    never up — same "gates only ever shrink a trade" philosophy this
+    module's own docstring states, applied here as literally as possible.
+
+    Signal-quality gates (confidence/agreement/event/freshness/spread) are
+    intentionally NOT re-verified here — those describe whether the
+    SIGNAL is still good, already covered by authorize()'s existing
+    price-drift check as a reasonable staleness proxy. Re-deriving them
+    properly would mean re-running the full decision pipeline (features,
+    model, calendar lookup) at approval time, a substantially bigger
+    change tracked separately, not folded into this fix."""
+    broker = broker_kind_for(instrument)
+    now = now or datetime.now(timezone.utc)
+    gates: list[GateResult] = []
+
+    def gate(name: str, passed: bool, detail: str) -> bool:
+        gates.append(GateResult(name, passed, detail))
+        return passed
+
+    manual_state = get_manual_kill_switch(engine, user_id, broker)
+    if manual_state and manual_state["active"]:
+        gate("kill_switch", False, f"manual/reconciliation latch active: {manual_state['reason']}")
+        return RiskDecision(False, "manual kill switch active", None, gates)
+    if not reconciliation_ok:
+        gate("kill_switch", False, "reconciliation failed")
+        return RiskDecision(False, "reconciliation failed", None, gates)
+
+    day_state = _get_or_init_day_state(engine, user_id, broker, account_nav, now)
+    if day_state["kill_switch_active"]:
+        gate("kill_switch", False, f"daily limit already breached: {day_state['kill_switch_reason']}")
+        return RiskDecision(False, "daily loss limit breached", None, gates)
+    daily_pl_pct = (
+        (account_nav - day_state["day_start_balance"]) / day_state["day_start_balance"]
+        if day_state["day_start_balance"] else 0.0
+    )
+    if day_state["day_start_balance"] and daily_pl_pct <= -DAILY_LOSS_LIMIT_PCT:
+        set_kill_switch(engine, user_id, broker, True, f"daily loss {daily_pl_pct:.2%} breached {-DAILY_LOSS_LIMIT_PCT:.2%}", now)
+        gate("kill_switch", False, f"daily loss limit newly breached: {daily_pl_pct:.2%}")
+        return RiskDecision(False, "daily loss limit breached", None, gates)
+
+    week_state = _get_or_init_week_state(engine, user_id, broker, account_nav, now)
+    if week_state.get("kill_switch_active"):
+        gate("kill_switch", False, f"weekly limit already breached: {week_state.get('kill_switch_reason')}")
+        return RiskDecision(False, "weekly loss limit breached", None, gates)
+    weekly_pl_pct = (
+        (account_nav - week_state["week_start_balance"]) / week_state["week_start_balance"]
+        if week_state["week_start_balance"] else 0.0
+    )
+    if week_state["week_start_balance"] and weekly_pl_pct <= -WEEKLY_LOSS_LIMIT_PCT:
+        set_weekly_kill_switch(engine, user_id, broker, True, f"weekly loss {weekly_pl_pct:.2%} breached {-WEEKLY_LOSS_LIMIT_PCT:.2%}", now)
+        gate("kill_switch", False, f"weekly loss limit newly breached: {weekly_pl_pct:.2%}")
+        return RiskDecision(False, "weekly loss limit breached", None, gates)
+    gate("kill_switch", True, f"daily P/L {daily_pl_pct:.2%}, weekly P/L {weekly_pl_pct:.2%}, no reconciliation failure")
+
+    if not gate("max_positions", open_position_count < MAX_CONCURRENT_POSITIONS,
+                f"{open_position_count} open vs max {MAX_CONCURRENT_POSITIONS}"):
+        return RiskDecision(False, "max concurrent positions reached", None, gates)
+
+    usd_direction_key = usd_direction_of_trade(instrument, action)
+    size_units = approved_size_units
+    notional_note = ""
+    if usd_direction_key == "no_usd_leg":
+        gate("correlation", True, "no direct USD leg — correlation cap doesn't apply to this pair")
+    else:
+        projected_risk = (open_positions_stop_risk_usd or {}).get(usd_direction_key, 0.0)
+        correlation_ok = (projected_risk / account_nav if account_nav else 0.0) < MAX_CORRELATED_EXPOSURE_PCT
+        detail = (
+            f"{usd_direction_key} unprotected position in this bucket — risk unbounded"
+            if projected_risk == float("inf")
+            else f"{usd_direction_key} risk-at-stop ${projected_risk:.0f} / NAV ${account_nav:.0f}"
+        )
+        gate("correlation", correlation_ok, detail)
+        if not correlation_ok:
+            return RiskDecision(False, "correlated risk-at-stop cap reached", None, gates)
+
+    if usd_direction_key in ("equity_long", "equity_short", "crypto_long", "crypto_short"):
+        already_open = (open_positions_usd_direction or {}).get(usd_direction_key, 0.0)
+        headroom_usd = account_nav * MAX_EQUITY_CRYPTO_NOTIONAL_PCT - already_open
+        if current_price > 0:
+            max_units_by_notional = max(0.0, headroom_usd / current_price)
+            if size_units > max_units_by_notional:
+                notional_note = (
+                    f", capped from {size_units:.4g} to {max_units_by_notional:.4g} units "
+                    f"by the {MAX_EQUITY_CRYPTO_NOTIONAL_PCT:.0%}-of-NAV notional ceiling"
+                )
+                size_units = max_units_by_notional if "/" in instrument else int(max_units_by_notional)
+
+    if not gate("sizing", size_units > 0, f"{size_units} units clear to submit at revalidation{notional_note}"):
+        if notional_note:
+            return RiskDecision(False, "notional ceiling reached", None, gates)
+        return RiskDecision(False, "no capacity remaining at submission time", None, gates)
+
+    return RiskDecision(True, "revalidated", size_units, gates)
