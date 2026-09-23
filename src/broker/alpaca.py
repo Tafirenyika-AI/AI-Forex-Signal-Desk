@@ -361,7 +361,47 @@ class AlpacaBroker(BrokerAdapter):
         )
 
         if is_crypto and stop_loss_price is not None:
-            await self._attach_crypto_stop_loss(instrument, data["id"], side, stop_loss_price, client_order_id)
+            # Real bug found 2026-09-22 (external review, P0-04): this used
+            # to be a bare await with no try/except — an exception raised
+            # HERE (e.g. a transient network error placing the stop, or on
+            # the intermediate /positions lookup) propagated all the way up
+            # through place_order() into ExecutionService.execute()'s own
+            # try/except, which then overwrote THIS ENTRY ORDER's result
+            # with status="ERROR:...", even though the entry itself had
+            # already genuinely filled. That corrupted this system's own
+            # records (orders_fills would show a FAILED order) while a
+            # real, live, UNPROTECTED crypto position sat at the broker,
+            # completely hidden. The entry's own real result must never be
+            # allowed to depend on what happens next.
+            try:
+                await self._attach_crypto_stop_loss(instrument, data["id"], side, stop_loss_price, client_order_id)
+            except Exception:
+                logger.exception(
+                    "Alpaca crypto entry %s (%s) filled but stop-loss attachment raised — "
+                    "position is currently UNPROTECTED at the broker; entry result is still reported "
+                    "correctly, this failure is NOT masked as an entry failure",
+                    data.get("id"), instrument,
+                )
+
+        if is_crypto and take_profit_price is not None:
+            # Real gap found 2026-09-22 (external review, P0-04): take_
+            # profit_price is silently accepted and then NEVER enforced for
+            # crypto — Alpaca rejects bracket orders for crypto outright
+            # (see module docstring), and unlike stop_loss there is no
+            # crypto take-profit attachment path at all. A caller supplying
+            # one would reasonably believe a target is being tracked; it
+            # is not. Loud and explicit rather than a silently-dropped
+            # parameter — "do not imply a target exists when no order or
+            # monitored rule enforces it" (brief's own P0-04 wording). A
+            # real monitored-exit policy for crypto targets is a genuine
+            # feature (research track, not a quick safety patch) — not
+            # built here.
+            logger.warning(
+                "Alpaca crypto order %s (%s): take_profit_price=%.6g was supplied but is NOT "
+                "enforced for crypto — no broker order or monitored rule tracks it. The position "
+                "has a stop only, not a target.",
+                data.get("id"), instrument, take_profit_price,
+            )
 
         return result
 
