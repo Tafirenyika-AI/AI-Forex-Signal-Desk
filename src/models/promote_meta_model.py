@@ -37,7 +37,12 @@ def list_versions(engine) -> None:
         print(f"  trained_at={row['trained_at']}  n_samples={validation.get('n_samples')}  "
               f"cv_accuracy={validation.get('cv_accuracy_mean', 0):.1%} "
               f"(+/- {validation.get('cv_accuracy_std', 0):.1%})  "
-              f"class_balance={validation.get('class_balance')}")
+              f"class_balance={validation.get('class_balance')}  "
+              # baseline_accuracy: added 2026-09-23 (external review, P1-02)
+              # -- "always guess the majority class" scores this for free,
+              # with zero real skill; a human promoting by hand should see
+              # it right next to cv_accuracy, not have to compute it.
+              f"majority_class_baseline={validation.get('baseline_accuracy', 0):.1%}")
 
 
 def promote(engine, version: str) -> None:

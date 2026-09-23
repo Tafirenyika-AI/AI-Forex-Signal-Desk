@@ -110,7 +110,13 @@ from src.knowledge.retrieval import search as knowledge_search
 from src.models.calibration import MIN_SEGMENT_SAMPLES as calibration_MIN_SEGMENT_SAMPLES
 from src.models.calibration import all_reports as calibration_all_reports
 from src.models.currency_strength import compute_all_currency_strengths
-from src.models.train_meta_model import AUTO_DEPLOY_MIN_ACCURACY, MIN_SAMPLES, MODEL_NAME, load_linked_features
+from src.models.train_meta_model import (
+    AUTO_DEPLOY_MIN_ACCURACY,
+    AUTO_DEPLOY_MIN_MARGIN_OVER_BASELINE,
+    MIN_SAMPLES,
+    MODEL_NAME,
+    load_linked_features,
+)
 from src.models.track_record import all_track_records
 from src.models.trading_sessions import current_session_state
 from src.risk import governor as risk_governor
@@ -2007,16 +2013,21 @@ with tab_learning:
                       v["trained_at"].strftime("%b %d, %H:%M UTC"))
         with c3:
             balance = validation.get("class_balance", {})
-            stat_tile("Class balance", f"{balance.get('win', '?')}W / {balance.get('loss', '?')}L", "")
+            baseline = validation.get("baseline_accuracy")
+            stat_tile(
+                "Class balance", f"{balance.get('win', '?')}W / {balance.get('loss', '?')}L",
+                f"always guessing the majority class alone would score {baseline:.0%}" if baseline is not None else "",
+            )
     else:
         st.info(
             "No meta-model has been deployed yet — decisions are still made by the "
             "fixed-weight heuristic blend in `decision/fusion.py`. A candidate trains "
             "automatically every night at 3am once there's enough data, and "
-            "**auto-deploys** if its cross-validated accuracy clears a basic "
-            f"{AUTO_DEPLOY_MIN_ACCURACY:.0%} floor (better than a coin flip) — no "
-            "manual step needed for that case. If a candidate exists below but isn't "
-            "deployed, it missed that floor; promote it by hand anyway with "
+            "**auto-deploys** if its cross-validated accuracy beats both a basic "
+            f"{AUTO_DEPLOY_MIN_ACCURACY:.0%} floor AND the majority-class baseline "
+            f"(always guessing the more common outcome) by {AUTO_DEPLOY_MIN_MARGIN_OVER_BASELINE:.0%} "
+            "or more — no manual step needed for that case. If a candidate exists below "
+            "but isn't deployed, it missed one of those bars; promote it by hand anyway with "
             "`python -m src.models.promote_meta_model <version>` if you've reviewed it "
             "and want it live regardless."
         )
@@ -2031,11 +2042,13 @@ with tab_learning:
                     f"**v{v['version']}** &nbsp; {badge} &nbsp;·&nbsp; "
                     f"trained {v['trained_at']:%Y-%m-%d %H:%M UTC}"
                 )
+                _baseline = validation.get("baseline_accuracy")
                 st.caption(
                     f"n={validation.get('n_samples', '?')} · "
                     f"cv_accuracy={validation.get('cv_accuracy_mean', 0):.0%} "
                     f"(± {validation.get('cv_accuracy_std', 0):.0%}) · "
                     f"class_balance={validation.get('class_balance', {})}"
+                    + (f" · majority-class baseline={_baseline:.0%}" if _baseline is not None else "")
                 )
 
 # --------------------------------------------------------------- challengers --

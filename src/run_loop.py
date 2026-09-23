@@ -650,6 +650,27 @@ async def _evaluate_one_horizon(
     ]
     data_freshness = {"price": price_age_seconds, "candles": candle_age_seconds}
 
+    # Real bug found 2026-09-22 (external review, P1-02): the meta-model is
+    # trained EXCLUSIVELY on OANDA outcomes (see train_meta_model.py's
+    # load_linked_features(), which filters broker == "oanda") but used to
+    # be applied to every instrument regardless of asset class. Not just a
+    # scope mismatch in principle: equity/crypto instruments always carry
+    # session_score/currency_strength_score == 0.0 (see is_forex gating
+    # earlier in evaluate_pair) — real, structural zeros the model was
+    # never trained to distinguish from a genuine neutral forex-session
+    # reading. Those features aren't MISSING (which _apply_meta_model
+    # already refuses to score against), so nothing caught this — the
+    # model would confidently score an equity/crypto trade against
+    # training-distribution-violating inputs that look numerically valid.
+    # "Refuse unsupported model use" (the brief's own P1-02 wording).
+    meta_model_for_instrument = meta_model if asset_class_for(pair) == "forex" else None
+    if meta_model is not None and meta_model_for_instrument is None:
+        logger.debug(
+            "%s/%s: meta-model deployed but scoped to OANDA/forex outcomes only — "
+            "not applied to this non-forex instrument, heuristic confidence stands",
+            pair, cfg.label,
+        )
+
     decision = fuse(
         instrument=pair,
         horizon=cfg.label,
@@ -659,7 +680,7 @@ async def _evaluate_one_horizon(
         atr_14=atr_14,
         data_freshness=data_freshness,
         now=now,
-        meta_model=meta_model,
+        meta_model=meta_model_for_instrument,
     )
 
     with engine.begin() as conn:

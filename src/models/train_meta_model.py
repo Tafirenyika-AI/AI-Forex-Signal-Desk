@@ -54,6 +54,32 @@ MODEL_NAME = "meta_model"
 # only the "looks fine, ship it" case skips the manual step now.
 AUTO_DEPLOY_MIN_ACCURACY = 0.5
 
+# Real gap found 2026-09-23 (external review, P1-02): a flat 50% floor is
+# the wrong baseline whenever the two classes aren't roughly balanced — a
+# classifier that always predicts the MAJORITY class clears 50% for free
+# on any imbalanced sample, with zero actual skill. Confirmed live: the
+# model deployed on 2026-09-23 (36 samples, 10 win / 26 loss) scored
+# 72.14% cv-accuracy — but always guessing "loss" on that same data scores
+# 72.22%, i.e. this model's reported accuracy was statistically
+# INDISTINGUISHABLE from having learned nothing at all, despite clearing
+# the flat 50% floor by 22 points. User-approved fix (2026-09-23, after
+# being shown this exact live example): auto-deploy now requires beating
+# the MAJORITY-CLASS baseline (not just 50%) by a real margin — enough to
+# rule out "got lucky within the trivial baseline's own noise," not just
+# "numerically higher than it." AUTO_DEPLOY_MIN_ACCURACY (0.5) is kept as
+# an absolute floor underneath this — a model could theoretically beat an
+# EXTREME majority-class baseline (e.g. 95% one-sided data) while still
+# being worse than a coin flip in absolute terms, which should never
+# auto-deploy either.
+AUTO_DEPLOY_MIN_MARGIN_OVER_BASELINE = 0.05  # 5 percentage points
+
+
+def required_accuracy_for_auto_deploy(baseline_accuracy: float) -> float:
+    """The bar a candidate's cv accuracy must clear to auto-deploy — pure
+    function, separately testable from train()'s file/DB I/O. See
+    AUTO_DEPLOY_MIN_MARGIN_OVER_BASELINE's own comment for the rationale."""
+    return max(AUTO_DEPLOY_MIN_ACCURACY, baseline_accuracy + AUTO_DEPLOY_MIN_MARGIN_OVER_BASELINE)
+
 
 def load_linked_features(engine: Engine) -> pd.DataFrame:
     """Rebuilds the (instrument, horizon, time) key for each outcome's
@@ -146,15 +172,21 @@ def train(engine: Engine) -> dict | None:
     model_path = MODEL_DIR / f"{MODEL_NAME}_{version}.joblib"
     joblib.dump({"model": model, "feature_cols": feature_cols}, model_path)
 
+    win_count = int(y.sum())
+    loss_count = int(len(y) - y.sum())
+    baseline_accuracy = max(win_count, loss_count) / len(y)  # always-predict-majority-class
+
     validation = {
         "n_samples": len(df),
         "cv_folds": cv_folds,
         "cv_accuracy_mean": float(cv_scores.mean()),
         "cv_accuracy_std": float(cv_scores.std()),
-        "class_balance": {"win": int(y.sum()), "loss": int(len(y) - y.sum())},
+        "class_balance": {"win": win_count, "loss": loss_count},
+        "baseline_accuracy": baseline_accuracy,
     }
 
-    auto_deploy = cv_scores.mean() > AUTO_DEPLOY_MIN_ACCURACY
+    required_accuracy = required_accuracy_for_auto_deploy(baseline_accuracy)
+    auto_deploy = cv_scores.mean() > required_accuracy
     with engine.begin() as conn:
         conn.execute(
             insert(model_registry_table).values(
@@ -180,15 +212,18 @@ def train(engine: Engine) -> dict | None:
 
     print(f"Trained meta-model v{version} on {len(df)} samples.")
     print(f"  Cross-validated accuracy: {cv_scores.mean():.1%} (+/- {cv_scores.std():.1%}, {cv_folds}-fold)")
-    print(f"  Class balance: {validation['class_balance']}")
+    print(f"  Class balance: {validation['class_balance']} (majority-class baseline: {baseline_accuracy:.1%})")
     print(f"  Saved to {model_path}")
     if auto_deploy:
-        print(f"  AUTO-DEPLOYED (cv accuracy {cv_scores.mean():.1%} > "
-              f"{AUTO_DEPLOY_MIN_ACCURACY:.0%} floor) — run_loop.py will pick "
+        print(f"  AUTO-DEPLOYED (cv accuracy {cv_scores.mean():.1%} > required {required_accuracy:.1%} "
+              f"[max of {AUTO_DEPLOY_MIN_ACCURACY:.0%} floor and baseline {baseline_accuracy:.1%} "
+              f"+ {AUTO_DEPLOY_MIN_MARGIN_OVER_BASELINE:.0%} margin]) — run_loop.py will pick "
               f"this up on its next cycle.")
     else:
-        print(f"  NOT auto-deployed: cv accuracy {cv_scores.mean():.1%} does not clear the "
-              f"{AUTO_DEPLOY_MIN_ACCURACY:.0%} floor (no better than a coin flip). Still saved "
+        print(f"  NOT auto-deployed: cv accuracy {cv_scores.mean():.1%} does not clear the required "
+              f"{required_accuracy:.1%} [max of {AUTO_DEPLOY_MIN_ACCURACY:.0%} floor and baseline "
+              f"{baseline_accuracy:.1%} + {AUTO_DEPLOY_MIN_MARGIN_OVER_BASELINE:.0%} margin] — "
+              f"not meaningfully better than always guessing the majority class. Still saved "
               f"and reviewable — promote by hand via src.models.promote_meta_model if you "
               f"want it live anyway.")
     return validation

@@ -248,6 +248,7 @@ def fuse(
         action = "SELL"
     else:
         action = "NO_TRADE"
+    heuristic_action = action  # kept for the explanation below — see meta-veto note there
 
     meta_note = None
     if meta_model is not None:
@@ -280,14 +281,30 @@ def fuse(
         entry_condition = "n/a"
         invalidation = "n/a"
         target_logic = "n/a"
-        explanation = (
-            f"combined_score={combined_score:+.3f} did not clear the "
-            f"±{effective_threshold:.3f} action threshold (regime={regime}, "
-            f"base ±{ACTION_THRESHOLD}), or components disagree too "
-            f"much to act. No trade is the correct output here, not a failure."
-        )
-        if meta_note:
-            explanation += f" {meta_note}."
+        # Real bug found 2026-09-22 (external review, P1-02): this text was
+        # always the threshold-miss explanation, even when the META-MODEL
+        # vetoed an otherwise-clearing heuristic signal (heuristic_action
+        # != "NO_TRADE" but the final action is) — confirmed live in
+        # production: a real NVDA signal at combined_score=+0.528 (well
+        # past the ±0.200 threshold) was reported as "did not clear the
+        # action threshold," which is factually false; the real reason was
+        # "meta-model calibrated P(win)=0.17 below 50% — vetoed." A human
+        # (or any downstream analysis) reading that explanation would
+        # conclude the heuristic itself was weak/undecided, when it had
+        # actually produced a confident signal the meta-model overrode.
+        if heuristic_action != "NO_TRADE" and meta_note:
+            explanation = (
+                f"heuristic combined_score={combined_score:+.3f} cleared ±{effective_threshold:.3f} "
+                f"(regime={regime}) for a {heuristic_action}, but {meta_note}. "
+                f"No trade is the correct output here, not a failure."
+            )
+        else:
+            explanation = (
+                f"combined_score={combined_score:+.3f} did not clear the "
+                f"±{effective_threshold:.3f} action threshold (regime={regime}, "
+                f"base ±{ACTION_THRESHOLD}), or components disagree too "
+                f"much to act. No trade is the correct output here, not a failure."
+            )
     else:
         direction = "above" if action == "BUY" else "below"
         entry_condition = (
