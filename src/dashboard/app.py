@@ -85,6 +85,7 @@ from src.data.db import (
     get_engine,
     invitations as invitations_table,
     knowledge_documents as knowledge_documents_table,
+    manual_kill_switch as manual_kill_switch_table,
     market_indicators as market_indicators_table,
     model_registry as model_registry_table,
     news_events as news_events_table,
@@ -795,21 +796,61 @@ async def _do_authorize(mode: str, trade_intent_id: int, decision: str, notes: s
         )
 
 
-def get_kill_switch_state() -> dict | None:
-    """Each broker (OANDA/Alpaca) now has its own risk_state row per day
-    (see the (user_id, day, broker) unique constraint) — surfaces ANY
-    active kill switch, since a human checking this sidebar needs to know
-    if trading is halted on EITHER broker, not just whichever row happened
-    to be fetched first."""
+def get_kill_switch_state(broker: str | None = None) -> dict | None:
+    """Combines all THREE kill-switch sources (P0-02, 2026-09-22 — see
+    src/risk/governor.py's set_manual_kill_switch docstring for why there
+    are three): the persistent manual/reconciliation latch, today's
+    automatic daily-loss-breach flag, and this week's automatic weekly-
+    loss-breach flag. `broker=None` checks every broker this user has
+    (a human checking this sidebar needs to know if EITHER is halted, not
+    just whichever happened to be checked first); a specific broker
+    narrows to just that one. Returns the first active one found (manual
+    checked first, as the most likely to need a human's attention), or
+    the first row of any kind if none are active, or None if nothing has
+    ever been recorded at all."""
+    brokers = [broker] if broker else ["oanda", "alpaca"]
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc)
+    iso_year, iso_week, _ = now.isocalendar()
+    week_key = f"{iso_year}-W{iso_week:02d}"
+    fallback = None
     with engine.connect() as conn:
-        rows = conn.execute(
-            select(risk_state).where(risk_state.c.user_id == CURRENT_USER_ID, risk_state.c.day == today)
-        ).mappings().all()
-    if not rows:
-        return None
-    active = [dict(r) for r in rows if r["kill_switch_active"]]
-    return active[0] if active else dict(rows[0])
+        for bk in brokers:
+            manual = conn.execute(
+                select(manual_kill_switch_table).where(
+                    manual_kill_switch_table.c.user_id == CURRENT_USER_ID,
+                    manual_kill_switch_table.c.broker == bk,
+                )
+            ).mappings().first()
+            daily = conn.execute(
+                select(risk_state).where(
+                    risk_state.c.user_id == CURRENT_USER_ID, risk_state.c.day == today, risk_state.c.broker == bk,
+                )
+            ).mappings().first()
+            weekly = conn.execute(
+                select(risk_state_weekly_table).where(
+                    risk_state_weekly_table.c.user_id == CURRENT_USER_ID,
+                    risk_state_weekly_table.c.iso_week == week_key, risk_state_weekly_table.c.broker == bk,
+                )
+            ).mappings().first()
+            if not (manual or daily or weekly):
+                continue
+            # day_start_balance merged in regardless of which source is
+            # active, so callers that only want it for a P/L% display
+            # (current_pl_pct) still get it even when a manual/weekly
+            # latch — not the daily row — is what's actually active.
+            base = {"day_start_balance": daily["day_start_balance"] if daily else None}
+            if manual and manual["active"]:
+                result = {**base, "kill_switch_active": True, "kill_switch_reason": manual["reason"], "source": "manual"}
+                return result
+            if weekly and weekly["kill_switch_active"]:
+                result = {**base, "kill_switch_active": True, "kill_switch_reason": weekly["kill_switch_reason"], "source": "weekly"}
+                return result
+            if daily and daily["kill_switch_active"]:
+                return {**dict(daily), "source": "daily"}
+            if fallback is None:
+                fallback = {**base, "kill_switch_active": False, "kill_switch_reason": None, "source": None}
+    return fallback
 
 
 def fetch_trade_outcomes(engine, user_id: int) -> list[dict]:
@@ -1293,17 +1334,30 @@ if kill_state and kill_state["kill_switch_active"]:
     st.sidebar.error(f"🛑 KILL SWITCH ACTIVE\n\n{kill_state['kill_switch_reason']}")
     if st.sidebar.button("▶️ Resume trading", width="stretch"):
         # Every broker, not just the one that happened to trip — a human
-        # resuming trading expects it fully resumed.
+        # resuming trading expects it fully resumed. Clears BOTH the
+        # persistent manual/reconciliation latch AND any automatic daily/
+        # weekly breach flags (same overall effect this button has always
+        # had — see set_manual_kill_switch's docstring for why there are
+        # now two underlying mechanisms instead of one).
         for _broker in ("oanda", "alpaca"):
+            risk_governor.set_manual_kill_switch(engine, CURRENT_USER_ID, _broker, False, None, f"dashboard:{CURRENT_USER['username']}")
             risk_governor.set_kill_switch(engine, CURRENT_USER_ID, _broker, False, None)
+            risk_governor.set_weekly_kill_switch(engine, CURRENT_USER_ID, _broker, False, None)
         st.rerun()
 else:
     st.sidebar.success("✅ Trading enabled")
     if st.sidebar.button("🛑 EMERGENCY STOP", width="stretch", type="primary"):
         # Every broker — an emergency stop that only halts OANDA while
-        # Alpaca keeps trading would not be an emergency stop.
+        # Alpaca keeps trading would not be an emergency stop. Uses the
+        # PERSISTENT manual latch (P0-02, 2026-09-22) — stays active across
+        # midnight and a process restart until explicitly resumed here,
+        # unlike the old day-scoped flag this used to share with the
+        # automatic daily-loss-breach guardrail.
         for _broker in ("oanda", "alpaca"):
-            risk_governor.set_kill_switch(engine, CURRENT_USER_ID, _broker, True, "manual emergency stop from dashboard")
+            risk_governor.set_manual_kill_switch(
+                engine, CURRENT_USER_ID, _broker, True, "manual emergency stop from dashboard",
+                f"dashboard:{CURRENT_USER['username']}",
+            )
         st.rerun()
 
 st.sidebar.divider()
@@ -2399,18 +2453,15 @@ with tab_risk:
     broker_kinds_present = ["oanda"] + (["alpaca"] if _alpaca_configured() else [])
     kill_cols = st.columns(len(broker_kinds_present))
     for bk, col in zip(broker_kinds_present, kill_cols):
-        day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        with engine.connect() as conn:
-            broker_day_state = conn.execute(
-                select(risk_state).where(
-                    risk_state.c.user_id == CURRENT_USER_ID, risk_state.c.day == day_key,
-                    risk_state.c.broker == bk,
-                )
-            ).mappings().first()
+        # Combined across all three sources (manual/reconciliation, daily,
+        # weekly — see get_kill_switch_state's docstring), not just today's
+        # daily row: a manual stop or a still-live weekly breach must show
+        # here even outside the exact day it was triggered.
+        broker_kill_state = get_kill_switch_state(broker=bk)
         with col:
-            if broker_day_state and broker_day_state["kill_switch_active"]:
+            if broker_kill_state and broker_kill_state["kill_switch_active"]:
                 stat_tile(f"Kill switch — {BROKER_LABELS[bk]}", "🔴 ACTIVE",
-                          broker_day_state["kill_switch_reason"] or "", polarity="negative")
+                          broker_kill_state["kill_switch_reason"] or "", polarity="negative")
             else:
                 stat_tile(f"Kill switch — {BROKER_LABELS[bk]}", "🟢 clear", "")
 

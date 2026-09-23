@@ -6,7 +6,7 @@ Branch: `hardening/p0-order-safety` (isolated per the brief's own instruction; n
 
 Status legend: **DONE** (implemented + tested, evidence below) · **PARTIAL** (real progress, real gap remains — see "Remaining") · **NOT STARTED**.
 
-This is Phase A (current-state verification) plus a first slice of Phase B (P0-01). The brief itself frames this as a multi-week, multi-phase effort (Phases A–F) — this session covers one bounded, fully-verified unit of it, not the whole brief. Everything below "P0-01" is NOT STARTED, tracked here so the next session picks up with full context rather than re-deriving it.
+This is Phase A (current-state verification) plus first slices of Phase B (P0-01, P0-02). The brief itself frames this as a multi-week, multi-phase effort (Phases A–F) — this session covers bounded, fully-verified units of it, not the whole brief. Everything below "P0-02" is NOT STARTED, tracked here so the next session picks up with full context rather than re-deriving it.
 
 ---
 
@@ -48,25 +48,48 @@ Fixing the notional bug above would have silently and drastically changed `MAX_C
 
 ---
 
-## P0-02 through P0-05, P1-01 through P1-06, UX-01 through UX-10, research tracks — **NOT STARTED**
+## P0-02 — persistent emergency stop and coherent loss budgets — **PARTIAL**
 
-Not investigated or implemented this session beyond the reading already done to scope P0-01 (which touches the same `src/risk/governor.py` and `src/run_loop.py` files P0-02/P0-03 also target — worth re-reading fresh rather than assuming no interaction). Continuing in priority order per the brief's own Phase B ("P0-01 through P0-05; basic risk/order status UI") is the natural next step:
+All three findings confirmed exactly as described before fixing:
 
-- **P0-02** (persistent emergency stop, coherent loss budgets) — `src/risk/governor.py`'s `set_kill_switch`/`_get_or_init_day_state` already exist and were read while working on P0-01; the "tied to calendar day, resets" finding was not independently re-verified this pass.
-- **P0-03** (one authoritative submission path) — shares infrastructure with P0-01's un-built atomic reservation (see above).
-- **P0-04** (broker reconciliation, protective-order verification) — directly related to this session's "unprotected position -> inf" fail-closed design in the correlation gate; that's a *symptom detector*, not the fix P0-04 actually asks for (durable follow-up, recovery, honest crypto-target-support disclosure).
+1. **Manual kill switch tied to calendar day.** The dashboard's "EMERGENCY STOP" button and `governor.py`'s own reconciliation-failure branch both called `set_kill_switch()`, writing into `risk_state`'s `(user_id, day, broker)`-scoped `kill_switch_active` flag — the SAME flag an automatic daily-loss-breach uses. A human's deliberate "stop everything" silently cleared itself at the next UTC midnight with no action from them, indistinguishable from an automatic daily guardrail resetting for a fresh day's budget (which IS correct behavior for that case).
+2. **Zero baseline.** `set_kill_switch()`'s placeholder `day_start_balance=0.0` (used when it was the first write of the day, e.g. a manual stop pressed before any evaluate() cycle had run) would permanently disable that day's daily-loss check (`if day_start_balance else 0.0` guards division, but also silently zeros out `daily_pl_pct` for the rest of the day once persisted). Root cause: manual/reconciliation writes had no real NAV to seed a baseline with. Resolved as a side effect of splitting concerns below — `set_kill_switch` (day-scoped) is now ONLY ever called from inside `evaluate()`, always after a real baseline already exists.
+3. **A single trade's max risk (3% ceiling) exceeds the entire daily loss limit (1.5%).** Confirmed: nothing previously stopped one maximally-confident trade from risking more than a full day's budget in one shot.
+
+**Implementation**:
+- New `manual_kill_switch` table (`src/data/db.py`) — one row per (user_id, broker), no day/week dimension, persists across restart and date rollover until explicitly cleared. Reconciliation failures now also land here (a structural "something's wrong" state, not a routine daily reset) instead of the day-scoped flag.
+- New `risk_state_weekly.kill_switch_active`/`kill_switch_reason` columns — a weekly breach used to reuse the DAY-scoped flag too, so a "weekly" limit only ever actually blocked the rest of that one day, not the week. Now persists for the real remainder of the ISO week.
+- `src/risk/governor.py`: new `get_manual_kill_switch`/`set_manual_kill_switch`/`set_weekly_kill_switch`; `evaluate()`'s kill-switch gate now checks manual (persistent) first, then daily (day-scoped, unchanged reset behavior — correct for an automatic daily guardrail), then weekly (now week-scoped). New remaining-daily-budget clamp in the sizing gate: a trade's own planned risk is capped to what's actually left of today's loss budget (same "gates only ever shrink a trade" philosophy as the existing notional-ceiling clamp), rather than only being caught retroactively by the kill switch on a LATER trade.
+- `src/dashboard/app.py`: `get_kill_switch_state()` rewritten to combine all three sources (manual/daily/weekly) per broker; the EMERGENCY STOP/Resume buttons now use the persistent manual latch (Resume still clears all three, preserving today's actual button behavior from the user's point of view — only WHEN each layer auto-clears changed, not what pressing the button does).
+- **Migration applied live**: `src/scripts/migrate_p0_02_kill_switch.py` (idempotent — additive nullable columns + a new table only, no data touched) — run against the real production database, verified via `metadata.create_all()` creating `manual_kill_switch` and `ADD COLUMN IF NOT EXISTS` adding the two `risk_state_weekly` columns. Confirmed necessary: the dashboard smoke test failed against real Postgres before this ran (`UndefinedColumn: risk_state_weekly.kill_switch_active`) and passed after.
+- **Live-verified** (not just unit tests): ran `set_manual_kill_switch`/`get_manual_kill_switch`/`set_weekly_kill_switch` directly against the real production database using a fake, non-existent `user_id=999999` (never a real account) to confirm the new table/columns actually work end-to-end post-migration, then deleted those rows immediately after.
+
+**Tests**: `tests/test_risk_governor_kill_switch.py` (8 tests, isolated in-memory SQLite) — manual latch blocks regardless of P/L, survives a simulated date rollover, clears on explicit reset; reconciliation failure sets the persistent (not daily) latch; weekly breach persists within the week and clears the following week; a single trade's risk is clamped to the remaining daily budget, and a near-zero remaining budget rejects outright.
+
+### Remaining (NOT done — tracked for continuation)
+
+- **UX-02's three distinct operations** ("Pause new entries" / "Cancel pending entries" / "Close positions") are explicitly out of scope here — this pass only fixed the persistence/baseline/budget backend; the dashboard still has one combined EMERGENCY STOP button, not three. That's UX-02's job, a real design task, not a quick add-on.
+- **"Monitor open positions even when no new signal is produced"** — not addressed. The kill-switch/budget gates only ever run when a NEW candidate signal reaches `evaluate()`; an already-open position isn't independently re-checked against the daily/weekly budget on a quiet cycle with no new signals.
+- **UI wording** was updated where it directly touches the changed mechanism (button comments, tracker) but a full "state each control's effect accurately" pass across the whole dashboard (per P0-02's own acceptance criteria) wasn't done — narrower than the brief's full ask.
+
+---
+
+## P0-03 through P0-05, P1-01 through P1-06, UX-01 through UX-10, research tracks — **NOT STARTED**
+
+- **P0-03** (one authoritative submission path) — shares infrastructure with P0-01's un-built atomic reservation.
+- **P0-04** (broker reconciliation, protective-order verification) — directly related to the "unprotected position -> inf" fail-closed design already built into the correlation gate (P0-01); that's a *symptom detector*, not the fix P0-04 actually asks for (durable follow-up, recovery, honest crypto-target-support disclosure).
 - **P0-05** (auth/session hardening) — untouched.
 - **P1-xx, UX-xx, research tracks** — untouched.
 
 ---
 
-## Verification evidence (this session)
+## Verification evidence (this session, cumulative)
 
-- `git diff --stat` scoped to: `src/risk/governor.py`, `src/run_loop.py`, `src/broker/alpaca.py`, plus 3 new test files, plus this tracker. Nothing in dashboard/auth/other broker files touched.
-- Full test suite: **40/40 passing** (18 pre-existing + 22 new), including the pre-existing dashboard smoke test (verified individually at 43.7s to rule out a false failure from resource contention when run alongside the rest of the suite).
-- No real broker calls, no real orders, no production DB access, no live risk-setting changes — all verification via fake broker objects or an isolated in-memory SQLite engine.
-- No currently-open trades were touched, inspected for closure, or otherwise acted on by this work — it changes code that will affect *future* risk-governor decisions on the next live cycle, not anything already open.
+- `git diff --stat` scoped to: `src/risk/governor.py`, `src/run_loop.py`, `src/broker/alpaca.py`, `src/data/db.py`, `src/dashboard/app.py`, one new migration script, 5 new test files, this tracker. Nothing in auth/other broker/execution-order files touched.
+- Full test suite: **48/48 passing** (18 original + 30 new across both P0-01 and P0-02), including the dashboard smoke test against the real (now-migrated) production database.
+- No real broker calls in tests, no real orders, no live-account risk-SETTING changes (only a schema migration — additive, non-destructive) — governor logic verified via fake broker objects or an isolated in-memory SQLite engine; the new kill-switch functions were ALSO live-verified directly against the real production DB using a fake `user_id` that matches no real account, then cleaned up immediately.
+- No currently-open trades were touched, inspected for closure, or otherwise acted on — all changes affect *future* risk-governor decisions on the next live cycle, not anything already open.
 
 ## Continuation state
 
-Next slice should be: (1) either close P0-01's two remaining gaps (candidate's-own-contribution, multi-horizon double-counting) since they're natural extensions of what's already built, or (2) move to P0-02 (kill-switch persistence) per the brief's own phase ordering — both are reasonable; P0-02 is probably higher-value since it's a distinct, self-contained, well-specified piece or work. Branch `hardening/p0-order-safety` is pushed to GitHub (not merged) for review.
+Natural next slice: **P0-03** (one authoritative submission path) shares real infrastructure with P0-01's still-open atomic-reservation gap — doing them together may be more efficient than sequentially. Alternatively, **P0-04** (protective-order verification/reconciliation) is a natural partner to P0-02's kill-switch work, both being about the system's honesty regarding its own state. Branch `hardening/p0-order-safety` is pushed to GitHub (not merged) for review; the P0-02 migration has ALREADY been applied live (unlike everything else, which is code-only until deployed) — worth flagging to whoever reviews this that the DB schema and the `main` branch's code are now slightly ahead of each other (harmless: the new column/table are additive and unused by any code path not on this branch).

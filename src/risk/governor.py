@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
 from src.broker.registry import broker_kind_for
+from src.data.db import manual_kill_switch as manual_kill_switch_table
 from src.data.db import risk_state as risk_state_table
 from src.data.db import risk_state_weekly as risk_state_weekly_table
 from src.data.db import upsert_insert as insert
@@ -389,21 +390,24 @@ def _get_or_init_week_state(engine: Engine, user_id: int, broker: str, nav: floa
 def set_kill_switch(
     engine: Engine, user_id: int, broker: str, active: bool, reason: str | None, now: datetime | None = None
 ) -> None:
+    """The DAY-scoped automatic guardrail flag — a daily loss-limit breach
+    (see evaluate()'s kill-switch gate). Deliberately resets at the next
+    UTC midnight, same as DAILY_LOSS_LIMIT_PCT's own "fresh budget each
+    day" design; that's correct for THIS gate. For anything that should
+    NOT silently reset (a human's manual stop, a reconciliation failure),
+    use set_manual_kill_switch below instead — see its docstring for the
+    real bug this split fixes (external review, P0-02, 2026-09-22).
+
+    As of that same fix, this is only ever called from inside evaluate()
+    itself, always after _get_or_init_day_state has already created this
+    day's row with a REAL nav baseline — so the day_start_balance=0.0
+    fallback below the INSERT branch is a defensive default that should
+    never actually be hit in practice (it's only relevant if this were
+    ever called as the FIRST write for a given day, which no caller does
+    anymore now that the dashboard's manual button uses the other table)."""
     now = now or datetime.now(timezone.utc)
     day_key = now.strftime("%Y-%m-%d")
     with engine.begin() as conn:
-        # day_start_balance=0.0 here is a placeholder, not a real NAV — this
-        # function (unlike _get_or_init_day_state) has no account NAV in
-        # scope, since its dashboard callers toggle the switch for both
-        # brokers at once without fetching either one's account state first.
-        # Harmless ONLY because evaluate()'s daily_pl_pct calc explicitly
-        # guards `if day_state["day_start_balance"] else 0.0` — a 0.0 here
-        # short-circuits to "0% daily P/L" rather than dividing by zero or
-        # falsely tripping the kill switch. If this row is the first one
-        # created for the day (no prior evaluate() cycle today), the day's
-        # real P/L just won't be tracked correctly until the next day
-        # rolls over — a known, deliberately accepted gap, not the bug
-        # fixed above in _get_or_init_day_state/_get_or_init_week_state.
         stmt = insert(risk_state_table).values(
             user_id=user_id,
             day=day_key,
@@ -420,6 +424,88 @@ def set_kill_switch(
                 "kill_switch_reason": reason,
                 "updated_at": now,
             },
+        )
+        conn.execute(stmt)
+
+
+def set_weekly_kill_switch(
+    engine: Engine, user_id: int, broker: str, active: bool, reason: str | None, now: datetime | None = None
+) -> None:
+    """The ISO-WEEK-scoped counterpart to set_kill_switch — a weekly loss-
+    limit breach. Persists for the rest of the ISO week it was detected
+    in (not just that one day — see risk_state_weekly's own comment for
+    the bug this fixes). Only ever called from inside evaluate(), always
+    after _get_or_init_week_state has already created this week's row."""
+    now = now or datetime.now(timezone.utc)
+    iso_year, iso_week, _ = now.isocalendar()
+    week_key = f"{iso_year}-W{iso_week:02d}"
+    with engine.begin() as conn:
+        stmt = insert(risk_state_weekly_table).values(
+            user_id=user_id,
+            iso_week=week_key,
+            broker=broker,
+            week_start_balance=0.0,
+            kill_switch_active=active,
+            kill_switch_reason=reason,
+            updated_at=now,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["user_id", "iso_week", "broker"],
+            set_={
+                "kill_switch_active": active,
+                "kill_switch_reason": reason,
+                "updated_at": now,
+            },
+        )
+        conn.execute(stmt)
+
+
+def get_manual_kill_switch(engine: Engine, user_id: int, broker: str) -> dict[str, Any] | None:
+    """The persistent, human-scoped latch — see set_manual_kill_switch's
+    docstring. None if never set for this (user, broker) (equivalent to
+    "not active", but distinguishable from an explicit prior resume)."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(manual_kill_switch_table).where(
+                manual_kill_switch_table.c.user_id == user_id,
+                manual_kill_switch_table.c.broker == broker,
+            )
+        ).mappings().first()
+    return dict(row) if row else None
+
+
+def set_manual_kill_switch(
+    engine: Engine, user_id: int, broker: str, active: bool, reason: str | None,
+    set_by: str, now: datetime | None = None,
+) -> None:
+    """A deliberate, persistent stop — a human pressing an emergency-stop
+    button, or the system detecting a reconciliation failure (the broker's
+    own account state no longer matches what this system expects, which
+    is a structural problem needing a look, not a routine daily reset).
+
+    Real bug found 2026-09-22 (external review, P0-02): both of these used
+    to share risk_state's DAY-scoped kill_switch_active flag with the
+    automatic daily-loss-breach gate — so a human's "stop everything"
+    (or an unresolved reconciliation failure) silently cleared itself at
+    the next UTC midnight, with no human action at all. This table has no
+    day/week dimension whatsoever, so it survives date rollover AND
+    process restart (a real Streamlit Cloud redeploy, or a scheduled
+    task's own process cycling) until explicitly cleared by an authorized
+    user — exactly the "keep the latch across restart and date rollover
+    until explicitly reset" requirement.
+
+    `set_by` is a plain audit string (e.g. "dashboard:alice",
+    "system:reconciliation") — this table is small and rarely written, so
+    a lightweight string is proportionate rather than a foreign key to a
+    full audit table."""
+    now = now or datetime.now(timezone.utc)
+    with engine.begin() as conn:
+        stmt = insert(manual_kill_switch_table).values(
+            user_id=user_id, broker=broker, active=active, reason=reason, set_by=set_by, set_at=now,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["user_id", "broker"],
+            set_={"active": active, "reason": reason, "set_by": set_by, "set_at": now},
         )
         conn.execute(stmt)
 
@@ -462,36 +548,59 @@ def evaluate(
         return passed
 
     # --- kill-switch gate (checked first; nothing below can override it) ---
+    # Manual/reconciliation latch checked BEFORE anything day/week-scoped —
+    # see set_manual_kill_switch's docstring (P0-02, 2026-09-22): this one
+    # persists across midnight and restart until an authorized user clears
+    # it, unlike the automatic daily/weekly guardrails below.
+    manual_state = get_manual_kill_switch(engine, user_id, broker)
+    if manual_state and manual_state["active"]:
+        gate("kill_switch", False, f"manual/reconciliation latch active: {manual_state['reason']}")
+        return RiskDecision(False, "manual kill switch active", None, gates)
+
+    if not reconciliation_ok:
+        set_manual_kill_switch(engine, user_id, broker, True, "position reconciliation failed", "system:reconciliation", now)
+        gate("kill_switch", False, "reconciliation failed — kill switch engaged")
+        return RiskDecision(False, "reconciliation failed", None, gates)
+
     day_state = _get_or_init_day_state(engine, user_id, broker, account_nav, now)
-    daily_pl_pct = (account_nav - day_state["day_start_balance"]) / day_state["day_start_balance"] if day_state["day_start_balance"] else 0.0
+    daily_baseline_available = bool(day_state["day_start_balance"])
+    daily_pl_pct = (
+        (account_nav - day_state["day_start_balance"]) / day_state["day_start_balance"]
+        if daily_baseline_available else 0.0
+    )
 
     if day_state["kill_switch_active"]:
         gate("kill_switch", False, f"already active: {day_state['kill_switch_reason']}")
         return RiskDecision(False, "kill switch active", None, gates)
 
-    if not reconciliation_ok:
-        set_kill_switch(engine, user_id, broker, True, "position reconciliation failed", now)
-        gate("kill_switch", False, "reconciliation failed — kill switch engaged")
-        return RiskDecision(False, "reconciliation failed", None, gates)
-
-    if daily_pl_pct <= -DAILY_LOSS_LIMIT_PCT:
+    if daily_baseline_available and daily_pl_pct <= -DAILY_LOSS_LIMIT_PCT:
         set_kill_switch(engine, user_id, broker, True, f"daily loss {daily_pl_pct:.2%} breached {-DAILY_LOSS_LIMIT_PCT:.2%}", now)
         gate("kill_switch", False, f"daily loss limit breached: {daily_pl_pct:.2%}")
         return RiskDecision(False, "daily loss limit breached", None, gates)
 
     # Weekly loss limit (spec sec. 17) — catches a slow bleed spread across
     # several down days that never individually breach the daily limit.
+    # Persists for the rest of the ISO week once breached (its OWN
+    # kill_switch_active flag, checked first — see risk_state_weekly's
+    # comment for the bug fixed by giving it one instead of borrowing the
+    # day-scoped flag, which cleared a "weekly" breach after one day).
     week_state = _get_or_init_week_state(engine, user_id, broker, account_nav, now)
+    if week_state.get("kill_switch_active"):
+        gate("kill_switch", False, f"weekly limit already breached this week: {week_state['kill_switch_reason']}")
+        return RiskDecision(False, "weekly loss limit breached", None, gates)
+    weekly_baseline_available = bool(week_state["week_start_balance"])
     weekly_pl_pct = (
         (account_nav - week_state["week_start_balance"]) / week_state["week_start_balance"]
-        if week_state["week_start_balance"] else 0.0
+        if weekly_baseline_available else 0.0
     )
-    if weekly_pl_pct <= -WEEKLY_LOSS_LIMIT_PCT:
-        set_kill_switch(engine, user_id, broker, True, f"weekly loss {weekly_pl_pct:.2%} breached {-WEEKLY_LOSS_LIMIT_PCT:.2%}", now)
+    if weekly_baseline_available and weekly_pl_pct <= -WEEKLY_LOSS_LIMIT_PCT:
+        set_weekly_kill_switch(engine, user_id, broker, True, f"weekly loss {weekly_pl_pct:.2%} breached {-WEEKLY_LOSS_LIMIT_PCT:.2%}", now)
         gate("kill_switch", False, f"weekly loss limit breached: {weekly_pl_pct:.2%}")
         return RiskDecision(False, "weekly loss limit breached", None, gates)
 
-    gate("kill_switch", True, f"daily P/L {daily_pl_pct:.2%}, weekly P/L {weekly_pl_pct:.2%}, no reconciliation failure")
+    baseline_note = "" if (daily_baseline_available and weekly_baseline_available) else " [baseline unavailable — P/L not evaluated]"
+    gate("kill_switch", True,
+         f"daily P/L {daily_pl_pct:.2%}, weekly P/L {weekly_pl_pct:.2%}, no reconciliation failure{baseline_note}")
 
     # --- action gate: nothing to size for NO_TRADE ---
     if action == "NO_TRADE":
@@ -635,6 +744,25 @@ def evaluate(
     # clamped explicitly regardless, since this is the one gate allowed to
     # increase size and a silent math error here would size a real order.
     risk_amount_usd = min(risk_amount_usd, account_nav * RISK_PER_TRADE_CEILING_PCT)
+    # Real gap found 2026-09-22 (external review, P0-02): RISK_PER_TRADE_
+    # CEILING_PCT (3%) is, by itself, DOUBLE DAILY_LOSS_LIMIT_PCT (1.5%) —
+    # nothing previously stopped a single maximally-confident trade from
+    # risking more than the ENTIRE day's loss budget in one shot if it hit
+    # its stop, only for the (already-tripped-too-late) daily kill switch
+    # to catch it on the NEXT trade. Clamp to what's actually left of
+    # today's budget instead — same "gates only ever shrink a trade"
+    # philosophy as the notional-ceiling clamp above. daily_pl_pct already
+    # defaults to 0.0 when no baseline is available yet (see above), which
+    # correctly leaves the full budget untouched rather than clamping to
+    # zero over an unrelated data gap.
+    daily_budget_note = ""
+    remaining_daily_budget_usd = account_nav * max(0.0, DAILY_LOSS_LIMIT_PCT - max(0.0, -daily_pl_pct))
+    if risk_amount_usd > remaining_daily_budget_usd:
+        daily_budget_note = (
+            f", risk capped from ${risk_amount_usd:.2f} to ${remaining_daily_budget_usd:.2f} "
+            f"by today's remaining loss budget (daily P/L so far {daily_pl_pct:.2%})"
+        )
+        risk_amount_usd = remaining_daily_budget_usd
     try:
         per_unit_usd_risk = stop_distance * usd_value_per_unit(instrument, current_price, usd_rates)
     except ValueError as exc:
@@ -669,11 +797,13 @@ def evaluate(
     size_detail = (
         f"{size_units} units at {effective_risk_pct:.2%} risk (${actual_risk_usd:.2f}) "
         f"[baseline {risk_pct:.2%}, regime x{regime_multiplier:.2f}, confidence x{confidence_multiplier:.2f}, "
-        f"track_record x{track_record_multiplier:.2f} ({track_record_detail})]{notional_note}"
+        f"track_record x{track_record_multiplier:.2f} ({track_record_detail})]{notional_note}{daily_budget_note}"
     )
     if not gate("sizing", size_units > 0, size_detail):
         if notional_note:
             return RiskDecision(False, "notional ceiling reached", None, gates)
+        if daily_budget_note:
+            return RiskDecision(False, "no remaining daily loss budget", None, gates)
         return RiskDecision(False, "computed size is zero", None, gates)
 
     return RiskDecision(True, "approved", size_units, gates)

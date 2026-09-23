@@ -500,7 +500,43 @@ risk_state_weekly = Table(
     Column("week_start_balance", Float, nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     Column("broker", String, nullable=True, default="oanda"),
+    # Real bug found 2026-09-22 (external review, P0-02): a weekly loss
+    # breach used to set the DAY-scoped risk_state.kill_switch_active flag
+    # (there was nowhere else to put it), so it auto-cleared at the next
+    # UTC midnight even though the breached WEEK hadn't ended — a "weekly"
+    # limit that in practice only ever blocked the rest of that one day.
+    # Own columns here so a weekly breach persists for the actual
+    # remainder of the ISO week it was detected in.
+    Column("kill_switch_active", Boolean, nullable=False, default=False),
+    Column("kill_switch_reason", String, nullable=True),
     UniqueConstraint("user_id", "iso_week", "broker", name="uq_risk_state_weekly_user_week"),
+)
+
+# --- manual_kill_switch: a human's deliberate "stop trading" decision,
+# deliberately SEPARATE from risk_state's per-day rows (external review,
+# P0-02, 2026-09-22). Real bug found: a manual emergency stop and an
+# automatic daily/weekly-loss-breach stop shared the exact same
+# (user_id, day, broker)-scoped kill_switch_active flag in risk_state —
+# so a human's "stop everything" silently reset at the next UTC midnight,
+# same as an automatic daily guardrail is SUPPOSED to (a fresh daily
+# budget each day is correct for THAT case; a human's deliberate stop
+# resetting itself without their input is not). One row per (user_id,
+# broker), no day/week dimension at all, so it survives date rollover
+# and process restart until explicitly cleared by an authorized user.
+# Reconciliation failures also land here, not in risk_state's daily rows
+# — "the broker's own account state doesn't match what we expect" is a
+# structural problem needing a human look, not a routine daily reset.
+manual_kill_switch = Table(
+    "manual_kill_switch",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, nullable=False, index=True),
+    Column("broker", String, nullable=False),
+    Column("active", Boolean, nullable=False, default=False),
+    Column("reason", String, nullable=True),
+    Column("set_by", String, nullable=True),  # e.g. "dashboard:<username>" or "system:reconciliation"
+    Column("set_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("user_id", "broker", name="uq_manual_kill_switch_user_broker"),
 )
 
 
