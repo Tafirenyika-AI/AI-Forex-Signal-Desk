@@ -67,6 +67,23 @@ def _spread_cost(instrument: str) -> float:
     return pips * pip_size
 
 
+def _gap_aware_stop_fill(direction: int, stop_level: float, bar_open: float) -> float:
+    """Real bug found 2026-09-23 (external review, P1-03, T04): a stop hit
+    used to always fill at the exact stop_level, even when the bar's own
+    OPEN had already gapped through it — no liquidity ever existed at
+    stop_level in that bar, so a fill there is not achievable with OHLC-
+    only data. Reproduced exactly: long at 100, stop 97, next bar opens 90
+    and highs at 92 (the whole bar's range is 90-92, nowhere near 97) used
+    to still report a 97 fill. Conservative gap-aware assumption: if the
+    open is already past the stop level in the adverse direction, the
+    realistic fill is the open price (the first price the market actually
+    traded at); otherwise (the ordinary intrabar-touch case) the fill
+    stays at stop_level exactly, unchanged from before."""
+    if direction == 1:  # long stop (a sell) -- a worse fill is LOWER
+        return min(stop_level, bar_open)
+    return max(stop_level, bar_open)  # short stop (a buy) -- a worse fill is HIGHER
+
+
 def _simulate_exit(
     candles_df: pd.DataFrame,
     entry_idx: int,
@@ -109,7 +126,8 @@ def _simulate_exit(
             stop_hit = bar["high"] >= stop_level
             target_hit = bar["low"] <= target_level
         if stop_hit:
-            return idx, float(stop_level), "stop"
+            fill_price = _gap_aware_stop_fill(direction, stop_level, float(bar["open"]))
+            return idx, float(fill_price), "stop"
         if target_hit:
             return idx, float(target_level), "target"
 
@@ -163,7 +181,8 @@ def _simulate_trailing_exit(
             stop_hit = bar["high"] >= stop_level
             target_hit = bar["low"] <= target_level
         if stop_hit:
-            return idx, float(stop_level), "stop"
+            fill_price = _gap_aware_stop_fill(direction, stop_level, float(bar["open"]))
+            return idx, float(fill_price), "stop"
         if target_hit:
             return idx, float(target_level), "target"
 
@@ -224,7 +243,20 @@ def run_walk_forward_backtest(
     regime_counts: dict[str, int] = {}
 
     for split in splits:
-        train_df = usable.iloc[split.train_start : split.train_end]
+        # Real bug found 2026-09-23 (external review, P1-03, T05): a row's
+        # target_up label is close[row + horizon_bars] (see add_forward_
+        # target), computed on the FULL frame before splitting — so the
+        # last `horizon_bars` rows of every naive [train_start:train_end)
+        # slice have labels that reach past train_end into the test
+        # window's own prices. With the defaults (train_window=250,
+        # horizon_bars=4), that's exactly rows 246-249, matching the
+        # brief's own reproduction precisely. Standard "purged" walk-
+        # forward practice: drop those rows from training rather than let
+        # the model see labels informed by data it's about to be scored
+        # against — this module's own docstring already claims "trained
+        # only on data strictly before that window," which was false for
+        # these rows until now.
+        train_df = usable.iloc[split.train_start : split.train_end - horizon_bars]
         test_df = usable.iloc[split.test_start : split.test_end]
 
         model = fit(train_df)

@@ -149,14 +149,23 @@ def test_trailing_stop_ratchets_down_and_locks_in_profit_short():
 
 def test_trailing_stop_never_loosens_against_the_position():
     """A bar with a huge unfavorable ATR must not widen (loosen) an
-    already-ratcheted stop back out — the trail only ever tightens."""
+    already-ratcheted stop back out — the trail only ever tightens.
+
+    Fixture note (fixed 2026-09-23 alongside the T04 gap-fill feature):
+    the original version of bar 3 had close=108 below its own stated
+    low=110, an invalid OHLC bar (close must always be within
+    [low, high]) that happened to also read as a gap-down open once the
+    new gap-aware stop fill started checking bar opens -- fixed to valid,
+    gapless OHLC that isolates this test's actual subject (the ratchet's
+    max-clamp) from the separate gap-fill behavior, which has its own
+    dedicated tests below."""
     df = _candles([
         {"open": 100, "high": 100, "low": 100, "close": 100, "atr_14": 1},  # entry bar
         {"open": 100, "high": 112, "low": 99, "close": 110, "atr_14": 1},  # ratchets stop to 109
-        # huge ATR here would suggest loosening to 88 (108 - 20) if the
+        # huge ATR here would suggest loosening to 89.5 (109.5 - 20) if the
         # ratchet didn't clamp to max(current, candidate) -- must stay 109
-        {"open": 110, "high": 111, "low": 110, "close": 108, "atr_14": 20},
-        {"open": 108, "high": 109.5, "low": 105, "close": 106, "atr_14": 1},  # hits the still-109 stop
+        {"open": 110, "high": 111, "low": 109.5, "close": 109.5, "atr_14": 20},
+        {"open": 109.5, "high": 110, "low": 105, "close": 106, "atr_14": 1},  # hits the still-109 stop, no gap
     ])
     exit_idx, exit_price, reason = _simulate_trailing_exit(
         df, entry_idx=0, direction=1, entry_price=100, stop_distance=5, target_distance=50, atr_multiplier=1.0,
@@ -199,3 +208,61 @@ def test_max_hold_bars_caps_the_walk_as_timeout():
     assert reason == "timeout"
     assert exit_idx == 2
     assert exit_price == 100.2
+
+
+# --- T04 (external review, 2026-09-23): gap-aware stop fill ---
+
+def test_long_stop_gap_fills_at_open_not_the_theoretical_stop_level():
+    # Exact T04 scenario: long at 100, stop 97, next bar opens 90 and
+    # highs at 92 -- the whole bar's range (88-92) never comes anywhere
+    # near 97, so a 97 fill (the old, buggy behavior) is not achievable.
+    df = _candles([
+        {"open": 100, "high": 100, "low": 100, "close": 100},
+        {"open": 90, "high": 92, "low": 88, "close": 91},
+    ])
+    exit_idx, exit_price, reason = _simulate_exit(
+        df, entry_idx=0, direction=1, entry_price=100, stop_distance=3, target_distance=5,
+    )
+    assert reason == "stop"
+    assert exit_price == 90  # the realistic gap-open fill, not 97
+
+
+def test_short_stop_gap_fills_at_open_not_the_theoretical_stop_level():
+    # Mirror case: short at 100, stop 103, next bar gaps UP and opens 110.
+    df = _candles([
+        {"open": 100, "high": 100, "low": 100, "close": 100},
+        {"open": 110, "high": 112, "low": 108, "close": 111},
+    ])
+    exit_idx, exit_price, reason = _simulate_exit(
+        df, entry_idx=0, direction=-1, entry_price=100, stop_distance=3, target_distance=5,
+    )
+    assert reason == "stop"
+    assert exit_price == 110
+
+
+def test_ordinary_intrabar_stop_touch_is_unaffected_by_the_gap_fix():
+    # No gap -- the bar opens on the favorable side and the stop is
+    # touched intrabar, same as any real ordinary stop-out. Fill must
+    # stay at the exact stop level, unchanged from before this fix.
+    df = _candles([
+        {"open": 100, "high": 100, "low": 100, "close": 100},
+        {"open": 100, "high": 101, "low": 96.5, "close": 97},
+    ])
+    exit_idx, exit_price, reason = _simulate_exit(
+        df, entry_idx=0, direction=1, entry_price=100, stop_distance=3, target_distance=5,
+    )
+    assert reason == "stop"
+    assert exit_price == 97
+
+
+def test_trailing_stop_gap_also_fills_at_open():
+    # Same gap-fill fix applies to the ratcheting trailing-stop walker.
+    df = _candles([
+        {"open": 100, "high": 100, "low": 100, "close": 100, "atr_14": 1},
+        {"open": 90, "high": 92, "low": 88, "close": 91, "atr_14": 1},
+    ])
+    exit_idx, exit_price, reason = _simulate_trailing_exit(
+        df, entry_idx=0, direction=1, entry_price=100, stop_distance=3, target_distance=50, atr_multiplier=1.0,
+    )
+    assert reason == "stop"
+    assert exit_price == 90
