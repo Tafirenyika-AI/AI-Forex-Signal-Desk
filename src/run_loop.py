@@ -776,7 +776,10 @@ async def _evaluate_one_horizon(
     # NO_TRADE, which is most cycles. Informational only (see
     # src/memory/analog_retrieval.py docstring) — never adjusts sizing.
     if decision.action != "NO_TRADE":
-        analog = find_similar_trades(engine, instrument=pair, regime=regime, action=decision.action)
+        analog = find_similar_trades(
+            engine, user_id=user_id, instrument=pair, regime=regime, action=decision.action,
+            horizon=cfg.label, execution_mode=execution_mode,
+        )
         with engine.begin() as conn:
             conn.execute(
                 insert(trade_analogs_table),

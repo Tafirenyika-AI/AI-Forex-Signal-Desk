@@ -172,28 +172,82 @@ async def _score_and_store(engine, brokers: dict[str, Any], *, source: str, trad
     return True
 
 
-def _hit_rate(engine, source: str) -> tuple[int, float | None]:
+def _challenger_trade_intent_ids(engine, challenger_name: str) -> set[int]:
     with engine.connect() as conn:
         rows = conn.execute(
-            select(signal_evaluations_table.c.hit).where(signal_evaluations_table.c.source == source)
+            select(signal_evaluations_table.c.trade_intent_id).where(
+                signal_evaluations_table.c.source == challenger_name
+            )
+        ).all()
+    return {r[0] for r in rows}
+
+
+def _matched_stats(engine, source: str, trade_intent_ids: set[int]) -> tuple[int, float | None, float | None]:
+    """Hit rate AND mean move_in_favor (expectancy), restricted to a specific
+    set of trade_intent_ids.
+
+    Real bug found 2026-09-24 (external review, P1-05): the previous
+    `_hit_rate(engine, source)` pulled ALL-TIME rows for a source with no
+    restriction to a shared opportunity set. Comparing the champion's hit
+    rate (computed over every signal it ever saw) against a challenger's
+    hit rate (computed only over whatever narrower subset it happened to
+    generate a decision for that cycle — recall extra_view() can return
+    None and skip a cycle entirely) compares two different populations
+    under the same metric name. A challenger could look better or worse
+    than the champion purely because it was evaluated over an easier or
+    harder slice of history, not because of any real edge. Restricting
+    BOTH sides to the exact same trade_intent_ids (the challenger's own
+    matched population) makes it a fair, like-for-like comparison.
+
+    Also surfaces avg move_in_favor (expectancy) alongside hit_rate — the
+    brief's own requirement to "compare net expectancy... not aggregate
+    directional hit rate alone." This is informational only: the
+    bury/keep DECISION below still uses hit_rate, unchanged from before,
+    since changing that policy itself is a consequential product choice
+    (same category as the P1-02 promotion-floor question that was put to
+    the user) rather than an objectively-correct bug fix.
+    """
+    if not trade_intent_ids:
+        return 0, None, None
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(signal_evaluations_table.c.hit, signal_evaluations_table.c.move_in_favor).where(
+                signal_evaluations_table.c.source == source,
+                signal_evaluations_table.c.trade_intent_id.in_(trade_intent_ids),
+            )
         ).all()
     n = len(rows)
     if n == 0:
-        return 0, None
-    return n, sum(1 for r in rows if r[0]) / n
+        return 0, None, None
+    hit_rate = sum(1 for r in rows if r[0]) / n
+    avg_move_in_favor = sum(r[1] for r in rows) / n
+    return n, hit_rate, avg_move_in_favor
 
 
 def _review_for_graveyard(engine, now: datetime) -> None:
-    champion_n, champion_hit_rate = _hit_rate(engine, "champion")
     for challenger in active_challengers(engine):
-        n, hit_rate = _hit_rate(engine, challenger.name)
+        # Matched population = every trade_intent this specific challenger
+        # actually scored — champion stats are recomputed against that same
+        # set per challenger (not once globally), since different
+        # challengers can be eligible on different, non-identical subsets.
+        matched_ids = _challenger_trade_intent_ids(engine, challenger.name)
+        n, hit_rate, challenger_expectancy = _matched_stats(engine, challenger.name, matched_ids)
+        champion_n, champion_hit_rate, champion_expectancy = _matched_stats(engine, "champion", matched_ids)
         if n < MIN_SAMPLES or champion_n < MIN_SAMPLES or hit_rate is None or champion_hit_rate is None:
-            print(f"{challenger.name}: {n} shadow samples (need {MIN_SAMPLES}; champion has {champion_n}) — not enough evidence yet")
+            print(
+                f"{challenger.name}: {n} matched shadow samples (need {MIN_SAMPLES}; champion has "
+                f"{champion_n} over the same {len(matched_ids)} opportunities) — not enough evidence yet"
+            )
             continue
+        expectancy_note = (
+            f", expectancy {challenger_expectancy:+.5f} vs champion {champion_expectancy:+.5f} "
+            "(mean move-in-favor per matched signal, informational)"
+        )
         if hit_rate <= champion_hit_rate:
             reason = (
-                f"after {n} shadow evaluations, hit_rate={hit_rate:.1%} did not beat "
-                f"champion's {champion_hit_rate:.1%} over the same period"
+                f"after {n} shadow evaluations (matched to the same opportunities the champion also "
+                f"scored), hit_rate={hit_rate:.1%} did not beat champion's {champion_hit_rate:.1%}"
+                f"{expectancy_note}"
             )
             with engine.begin() as conn:
                 stmt = insert(strategy_graveyard_table).values(
@@ -205,8 +259,9 @@ def _review_for_graveyard(engine, now: datetime) -> None:
             print(f"{challenger.name}: BURIED — {reason}")
         else:
             print(
-                f"{challenger.name}: {n} samples, hit_rate={hit_rate:.1%} vs champion {champion_hit_rate:.1%} "
-                "— outperforming so far; NOT auto-promoted, needs human review before any weight change"
+                f"{challenger.name}: {n} matched samples, hit_rate={hit_rate:.1%} vs champion "
+                f"{champion_hit_rate:.1%}{expectancy_note} — outperforming so far; NOT auto-promoted, "
+                "needs human review before any weight change"
             )
 
 

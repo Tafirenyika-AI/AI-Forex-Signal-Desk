@@ -2,12 +2,19 @@
 bullet): "Before a new trade, retrieve statistically similar historical
 situations and compare outcomes."
 
-"Similar" here means the same instrument, regime and action — the three
-things this system already tags every trade_intent with (see
-src/decision/fusion.py's regime routing, P7). Same self-relative
+"Similar" here means the same account (user_id), execution environment
+(execution_mode: paper vs demo), horizon, regime, and action — five
+things this system already tags every trade_intent/trade_outcome with
+(see src/decision/fusion.py's regime routing, P7). Same self-relative
 sample-size handling philosophy as crowding_score/regime detection
 elsewhere in this project: with too few same-instrument matches, fall back
-to matching on regime+action across all instruments before giving up.
+to matching on regime+action+horizon+execution_mode across all instruments
+before giving up. user_id, horizon, and execution_mode are non-negotiable
+match dimensions at every tier: one account's history is never
+informational for another's (privacy/account isolation), a 15-minute
+signal's outcome is never pooled with a 4-hour signal's, and a
+paper-simulated fill (no real spread/slippage) is never pooled with a
+real broker demo-account fill.
 
 Deliberately informational, not a gate: results are logged (trade_analogs
 table) and shown in the dashboard/decision explanation, but never used to
@@ -40,7 +47,10 @@ class AnalogSummary:
     avg_pl_usd: float | None
 
 
-def _query_matches(engine: Engine, *, regime: str, action: str, instrument: str | None) -> list[dict]:
+def _query_matches(
+    engine: Engine, *, user_id: int, regime: str, action: str, horizon: str, execution_mode: str,
+    instrument: str | None,
+) -> list[dict]:
     with engine.connect() as conn:
         stmt = (
             select(
@@ -52,7 +62,45 @@ def _query_matches(engine: Engine, *, regime: str, action: str, instrument: str 
                 trade_intents_table.c.stop_distance,
             )
             .join(trade_intents_table, trade_outcomes_table.c.trade_intent_id == trade_intents_table.c.id)
-            .where(trade_intents_table.c.regime == regime, trade_intents_table.c.action == action)
+            .where(
+                trade_intents_table.c.regime == regime,
+                trade_intents_table.c.action == action,
+                # Real bug found 2026-09-24 (external review, P1-05): no
+                # environment filter either — a paper-simulated fill (this
+                # system's own DB-ledger simulation, no real spread/slippage)
+                # and a real OANDA/Alpaca demo-account fill are economically
+                # different things, pooled together under the same regime/
+                # action/instrument/horizon bucket. Currently zero live
+                # impact (every real trade_outcomes row today is
+                # execution_mode="demo" — confirmed live), but scoping it now
+                # closes the gap before paper-mode trading ever produces a
+                # row that would silently contaminate demo-mode analogs.
+                trade_outcomes_table.c.execution_mode == execution_mode,
+                # Real bug found 2026-09-24 (external review, P1-05): the
+                # match key was missing horizon entirely, pooling a 15-minute
+                # scalp signal's outcome together with a 4-hour swing
+                # signal's just because they shared a regime/action/
+                # instrument. Win rate and R-multiple distributions differ
+                # substantially by holding period, so this silently diluted
+                # the analog stat with outcomes from a fundamentally
+                # different bet. Horizon is now a required match dimension
+                # at every match tier (same-instrument and the
+                # regime+action fallback both narrow to it too).
+                trade_intents_table.c.horizon == horizon,
+                # Real bug found 2026-09-24 (external review, P1-05): this
+                # query had NO user_id filter at all, on a multi-user
+                # system that otherwise carefully isolates each user's own
+                # dashboard/account data. Every user's analog summary was
+                # silently pooling EVERY user's trade_outcomes together —
+                # not anonymized, just unscoped. Confirmed live: this
+                # account currently has 2 real users; whichever one has
+                # less trading history would see analog stats dominated
+                # by the OTHER user's entirely separate account. Filtering
+                # on both tables' own user_id (defense in depth, not
+                # relying solely on the join) closes this.
+                trade_intents_table.c.user_id == user_id,
+                trade_outcomes_table.c.user_id == user_id,
+            )
         )
         if instrument is not None:
             stmt = stmt.where(trade_outcomes_table.c.instrument == instrument)
@@ -80,12 +128,20 @@ def _summarize(rows: list[dict], basis: str) -> AnalogSummary:
                           avg_r_multiple=avg_r_multiple, avg_pl_usd=avg_pl_usd)
 
 
-def find_similar_trades(engine: Engine, *, instrument: str, regime: str, action: str) -> AnalogSummary:
-    same_instrument = _query_matches(engine, regime=regime, action=action, instrument=instrument)
+def find_similar_trades(
+    engine: Engine, *, user_id: int, instrument: str, regime: str, action: str, horizon: str, execution_mode: str,
+) -> AnalogSummary:
+    same_instrument = _query_matches(
+        engine, user_id=user_id, regime=regime, action=action, horizon=horizon,
+        execution_mode=execution_mode, instrument=instrument,
+    )
     if len(same_instrument) >= MIN_SAMPLES_FOR_INSTRUMENT_MATCH:
         return _summarize(same_instrument, "instrument_regime_action")
 
-    fallback = _query_matches(engine, regime=regime, action=action, instrument=None)
+    fallback = _query_matches(
+        engine, user_id=user_id, regime=regime, action=action, horizon=horizon,
+        execution_mode=execution_mode, instrument=None,
+    )
     if len(fallback) >= MIN_SAMPLES_FOR_INSTRUMENT_MATCH:
         return _summarize(fallback, "regime_action_fallback")
 
