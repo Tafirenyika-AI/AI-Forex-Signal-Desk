@@ -29,6 +29,19 @@ from datetime import datetime, timedelta
 from enum import Enum
 
 MAX_MATCH_WINDOW_DAYS = 60
+# Real bug found 2026-09-24 (external review, P1-04, T06): FRED's event_time
+# is the reference period's OWN start date (e.g. July 1 for July data), but
+# a real monthly release for that period doesn't publish until several
+# weeks later — the PRIOR month's release (e.g. June CPI, published in
+# mid-July) is naturally CLOSER to July 1 in raw day-count than the correct
+# July release (published in mid-August), so "pick whichever FF row is
+# closest in time" reliably picked the WRONG reference period's release.
+# 25 days is comfortably below the ~40-45 day real lag for the series this
+# module matches (CPI, payrolls, unemployment, Fed funds, GDP all publish
+# 2+ weeks after their OWN reference period ends, i.e. well past this
+# floor measured from the period's START) while still safely excluding a
+# same-day-published PRIOR period's release.
+MIN_MATCH_LAG_DAYS = 25
 
 
 class SeriesTransform(Enum):
@@ -53,6 +66,25 @@ FRED_SERIES_TRANSFORM = {
     "US GDP": SeriesTransform.PCT_CHANGE,
 }
 
+# Real bug found 2026-09-24 (external review, P1-04, T07): src/models/
+# surprise_component.py's pair_surprise_score() used to treat "actual beat
+# consensus" (surprise_vs_consensus > 0) as uniformly currency-POSITIVE
+# for every series — true for CPI/payrolls/Fed-funds/GDP under the
+# conventional simplified FX heuristic (stronger print = more hawkish/
+# healthier economy = currency-supportive), but backwards for the
+# unemployment RATE: a higher-than-expected rate means a WEAKER labor
+# market, which is currency-NEGATIVE, not positive. A numerical increase
+# alone is not favorable news — it depends on what's increasing. +1 keeps
+# today's convention for the series where it's directionally correct; -1
+# is the one series (so far) where "higher" means "worse."
+FRED_SERIES_SURPRISE_DIRECTION = {
+    "US CPI (headline, SA)": 1,
+    "US Nonfarm Payrolls": 1,
+    "US Unemployment Rate": -1,
+    "US Fed Funds Rate": 1,
+    "US GDP": 1,
+}
+
 
 def _comparable_actual(fred_row: dict, transform: SeriesTransform) -> float:
     actual, previous = fred_row["actual"], fred_row["previous"]
@@ -66,8 +98,18 @@ def _comparable_actual(fred_row: dict, transform: SeriesTransform) -> float:
 
 
 def _matches_us_cpi(name: str) -> bool:
+    # Real bug found 2026-09-24 (external review, P1-04, T06): this used to
+    # match "CPI m/m" AND "CPI y/y" indiscriminately — Forex Factory
+    # publishes both as separate rows for the same release. FRED_SERIES_
+    # TRANSFORM's PCT_CHANGE for this series computes a MONTH-over-month
+    # percentage from FRED's raw index level, so a "CPI y/y" consensus
+    # (an annual-basis figure, typically several times larger) is the
+    # wrong unit to compare it against — exactly "compares monthly change
+    # with annual consensus" from the brief's own reproduction. Requiring
+    # "m/m" and excluding "y/y" pins this matcher to the one FF release
+    # whose consensus is actually in the same units as comparable_actual.
     n = name.lower()
-    return "cpi" in n and "core" not in n
+    return "cpi" in n and "core" not in n and "y/y" not in n and ("m/m" in n or "mom" in n)
 
 
 def _matches_us_payrolls(name: str) -> bool:
@@ -127,7 +169,12 @@ def match_surprises(fred_rows: list[dict], ff_rows: list[dict]) -> list[Economic
             if ff["currency"] == fred_row["currency"]
             and ff.get("consensus") is not None
             and matcher(ff["event_name"])
-            and 0 <= (ff["event_time"] - fred_row["event_time"]).days <= MAX_MATCH_WINDOW_DAYS
+            # MIN_MATCH_LAG_DAYS excludes the PRIOR reference period's own
+            # release (e.g. June CPI, published in mid-July) from matching
+            # against a FRED row dated at the START of the NEXT period
+            # (July 1) -- see that constant's own comment for why "closest
+            # in time" alone reliably picked the wrong period.
+            and MIN_MATCH_LAG_DAYS <= (ff["event_time"] - fred_row["event_time"]).days <= MAX_MATCH_WINDOW_DAYS
         ]
         if not candidates:
             continue

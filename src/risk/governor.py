@@ -117,6 +117,21 @@ MAX_SPREAD_MULTIPLE = 3.0  # reject if current spread > N x recent median spread
 MIN_CONFIDENCE = 0.38
 EVENT_LOCKOUT_MINUTES = 30
 
+# Real bug found 2026-09-24 (external review, P1-04, T03): check_calendar_
+# event_risk used to treat "at least one row exists for either currency,
+# any age" as full, verified calendar coverage — a 60-day-old single USD
+# row made EUR_USD report coverage even with zero real EUR data and a
+# badly stale schedule. src/scripts/ingest_calendar.py's own docstring
+# says to run it every 30-60 minutes; a currency with no fresher row than
+# this has an UNVERIFIED schedule, not a verified-safe one, regardless of
+# how many old rows happen to exist. 6h tolerates a few missed scheduled
+# runs (a brief outage, a slow weekend) without false-triggering, while
+# still catching a genuinely broken/stopped feed. Checked against real
+# production data before shipping: all 6 majors were 0.4h old at the time
+# this was added, so this added a safety net without changing any current
+# live behavior.
+CALENDAR_FRESHNESS_HOURS = 6.0
+
 # Autonomous Upgrade Spec sec. 11 "Market Regime Router": "High volatility ->
 # reduce size". This is the only regime-routing behavior that belongs in the
 # risk governor rather than the fusion layer (src/decision/fusion.py's
@@ -182,7 +197,16 @@ def check_calendar_event_risk(
     currencies, so `calendar_covers_currency=True` (deliberately, not False)
     lets the event gate downstream pass rather than reject every equity/
     crypto trade for "no calendar coverage", which would otherwise
-    permanently lock them out."""
+    permanently lock them out.
+
+    Real bug found 2026-09-24 (external review, P1-04, T03): coverage used
+    to mean only "at least one row exists for EITHER currency, of any
+    age" — a single 60-day-stale USD row made EUR_USD report full coverage
+    even with zero real EUR data and a badly out-of-date schedule.
+    `calendar_covers_currency` now requires BOTH currencies (not just one)
+    to have a row whose own `ingested_at` is within CALENDAR_FRESHNESS_
+    HOURS — "verified low risk" now actually means verified and recent,
+    not merely non-empty."""
     if "_" not in pair:
         return True, False
     base, quote = pair.split("_")
@@ -191,7 +215,24 @@ def check_calendar_event_risk(
         e for e in economic_events
         if e.get("source") == source and e.get("currency") in currencies
     ]
-    calendar_covers_currency = len(relevant) > 0
+
+    freshest_ingested_at: dict[str, datetime] = {}
+    for e in relevant:
+        ingested = e.get("ingested_at")
+        currency = e.get("currency")
+        if ingested is None or currency is None:
+            continue
+        if currency not in freshest_ingested_at or ingested > freshest_ingested_at[currency]:
+            freshest_ingested_at[currency] = ingested
+
+    def _currency_freshly_covered(currency: str) -> bool:
+        freshest = freshest_ingested_at.get(currency)
+        if freshest is None:
+            return False  # no row at all, or none with a usable ingested_at
+        age_hours = (now - freshest).total_seconds() / 3600.0
+        return age_hours <= CALENDAR_FRESHNESS_HOURS
+
+    calendar_covers_currency = all(_currency_freshly_covered(c) for c in currencies)
 
     window_start = now - timedelta(minutes=lockout_minutes)
     window_end = now + timedelta(minutes=lockout_minutes)

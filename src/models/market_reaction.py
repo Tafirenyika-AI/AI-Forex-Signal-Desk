@@ -23,6 +23,9 @@ REPRESENTATIVE_PAIR = {
 }
 
 PRE_EVENT_BUFFER_MINUTES = 15
+# Matches the "M5" granularity requested from get_candles_range below --
+# see compute_price_reaction's own fix note for why this matters.
+CANDLE_GRANULARITY_MINUTES = 5
 
 
 async def compute_price_reaction(
@@ -41,8 +44,21 @@ async def compute_price_reaction(
     if len(candles) < 2:
         return None
 
-    pre_event = [c for c in candles if c.time <= event_time]
-    post_event = [c for c in candles if c.time > event_time]
+    # Real bug found 2026-09-24 (external review, P1-04, T12): `c.time` is a
+    # candle's OPEN/start timestamp, not its close -- a candle starting
+    # just before event_time can still SPAN the announcement (its own
+    # 5-minute window covers the moment the release happens), so its
+    # CLOSE already reflects the post-announcement price. Using `c.time <=
+    # event_time` put that contaminated candle in the "pre-event baseline"
+    # instead of the "reaction" bucket -- a real jump measured as its own
+    # baseline, always reporting a reaction of exactly zero the instant a
+    # move happens inside the event-start candle itself, no matter how big
+    # the real move was. Only a candle whose ENTIRE window closed strictly
+    # before the event is a genuine baseline; the event-start candle (and
+    # everything after) belongs in the reaction measurement.
+    candle_duration = timedelta(minutes=CANDLE_GRANULARITY_MINUTES)
+    pre_event = [c for c in candles if c.time + candle_duration <= event_time]
+    post_event = [c for c in candles if c.time + candle_duration > event_time]
     if not pre_event or not post_event:
         return None
 

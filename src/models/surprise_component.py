@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from src.models.surprise_engine import FRED_SERIES_SURPRISE_DIRECTION
+
 # Same lookback as market_reaction.py's own "still relevant" window for a
 # single release — a CPI surprise from 6 hours ago still says something
 # about USD; one from a week ago has long since been priced in.
@@ -43,7 +45,12 @@ def pair_surprise_score(surprise_rows: list[dict], pair: str, now: datetime) -> 
             continue
 
         threshold = max(0.05, abs(row["consensus"]) * 0.15)
-        score = max(-1.0, min(1.0, row["surprise_vs_consensus"] / threshold))
+        # Real bug found 2026-09-24 (external review, P1-04, T07): "beat
+        # consensus" isn't uniformly currency-positive across series -- a
+        # higher-than-expected unemployment RATE is bad news, not good.
+        # See FRED_SERIES_SURPRISE_DIRECTION's own comment.
+        direction = FRED_SERIES_SURPRISE_DIRECTION.get(row["fred_event_name"], 1)
+        score = max(-1.0, min(1.0, direction * row["surprise_vs_consensus"] / threshold))
         if row["currency"] == quote:
             score = -score
 

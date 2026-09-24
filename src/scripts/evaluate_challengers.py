@@ -86,6 +86,22 @@ async def _expiry_price(
     candles = await broker.get_candles_range(instrument, cfg.granularity, target, to_time)
     if not candles:
         return None
+    # Real bug found 2026-09-24 (external review, P1-04): this used to
+    # return candles[0].close unconditionally. _score_and_store's caller
+    # treats a non-None return as the FINAL, PERMANENT expiry price for
+    # this signal (signal_evaluations has a durable uniqueness constraint
+    # on (source, trade_intent_id) — nothing ever re-scores it after
+    # this). If the scheduled job happens to run right as this horizon
+    # elapses, candles[0] can still be the currently-FORMING candle, whose
+    # close can keep changing as more real ticks arrive — permanently
+    # locking in a still-moving, not-yet-real price as if it were final.
+    # "Incomplete candles cannot change an already-final evaluation" (the
+    # brief's own P1-04 acceptance criterion): the fix is to never let an
+    # incomplete candle START one in the first place. Returning None here
+    # simply defers scoring to the next scheduled run, by which point this
+    # candle will have closed for real.
+    if not candles[0].complete:
+        return None
     return candles[0].close
 
 
