@@ -1,0 +1,20 @@
+{
+  "captured_at": "2026-10-01T15:51:06.879963+00:00",
+  "alpaca": {
+    "account_id": "PA3P4V842H2K",
+    "balance": 104829.88,
+    "nav": 104829.88,
+    "unrealized_pl": 0,
+    "open_position_count": 0,
+    "positions": [],
+    "open_orders": []
+  },
+  "oanda": {
+    "account_id": "101-001-40077004-001",
+    "balance": 9228.2265,
+    "nav": 9228.2265,
+    "unrealized_pl": 0.0,
+    "open_position_count": 0,
+    "positions": []
+  }
+}
