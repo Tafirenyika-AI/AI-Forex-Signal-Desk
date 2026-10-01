@@ -645,9 +645,22 @@ async def _evaluate_one_horizon(
         ComponentView("macro", macro_score, macro_conf),
         ComponentView("cross_market", cross_market_score, cross_market_conf),
         ComponentView("news", news_score, news_conf),
-        ComponentView("session", session_score, session_conf),
-        ComponentView("currency_strength", currency_strength_score, currency_strength_conf),
     ]
+    # Real bug found live 2026-10-01: session/currency_strength are
+    # structurally (0.0, 0.0) for non-forex (see evaluate_pair's own
+    # is_forex gating) -- a zero-confidence component contributes nothing
+    # to fuse()'s weighted numerator/denominator (correctly a no-op there),
+    # but its nominal weight (0.10 + 0.05 = 0.15) still counted toward
+    # fuse()'s total_weight, which combined_confidence is scaled against.
+    # That silently dampened EVERY equity/crypto decision's confidence by
+    # ~13% (0.15 of dead weight diluting an otherwise-1.0 live total) for
+    # a structural reason that has nothing to do with actual signal
+    # quality -- now that forex is gone, this was happening on literally
+    # every single live decision. Only constructing these views when
+    # they're genuinely applicable removes the phantom weight entirely.
+    if asset_class_for(pair) == "forex":
+        component_views.append(ComponentView("session", session_score, session_conf))
+        component_views.append(ComponentView("currency_strength", currency_strength_score, currency_strength_conf))
     data_freshness = {"price": price_age_seconds, "candles": candle_age_seconds}
 
     # Real bug found 2026-09-22 (external review, P1-02): the meta-model is

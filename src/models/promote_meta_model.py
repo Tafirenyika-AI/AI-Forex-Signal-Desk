@@ -72,16 +72,38 @@ def promote(engine, version: str) -> None:
           f"run_loop.py will pick it up on its next start.")
 
 
+def demote_all(engine) -> None:
+    """Undeploys every meta-model version with nothing re-promoted in its
+    place — the correct state when none should currently apply to
+    anything (e.g. the deployed model is forex-only and forex trading has
+    stopped, 2026-10-01). load_deployed_meta_model() already treats "no
+    deployed row" as a first-class, explicitly-handled case (falls back
+    to decision/fusion.py's fixed-weight heuristic, not an error) — this
+    is not a degraded state, just an honest one."""
+    with engine.begin() as conn:
+        result = conn.execute(
+            update(model_registry_table)
+            .where(model_registry_table.c.name == MODEL_NAME)
+            .where(model_registry_table.c.deployed.is_(True))
+            .values(deployed=False)
+        )
+    print(f"Undeployed {result.rowcount} meta-model version(s). "
+          f"run_loop.py now uses the fixed-weight heuristic for every instrument.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Promote/inspect trained meta-model versions")
     parser.add_argument("version", nargs="?", help="Version string to promote (see --list)")
     parser.add_argument("--list", action="store_true", help="List trained versions and their validation stats")
+    parser.add_argument("--demote-all", action="store_true", help="Undeploy every version (use the heuristic for everything)")
     args = parser.parse_args()
 
     settings = load_settings()
     engine = get_engine(settings.db_path)
 
-    if args.list or not args.version:
+    if args.demote_all:
+        demote_all(engine)
+    elif args.list or not args.version:
         list_versions(engine)
     else:
         promote(engine, args.version)
