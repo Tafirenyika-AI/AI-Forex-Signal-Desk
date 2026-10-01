@@ -1,8 +1,17 @@
-"""Pulls closed trades from the OANDA demo account and links them back to
-the trade_intent that caused them, into trade_outcomes.
+"""Pulls closed trades from Alpaca and links them back to the trade_intent
+that caused them, into trade_outcomes.
 
 Run periodically (e.g. every 30-60 minutes is plenty) — trades don't close
 faster than that in a 15m-4h-horizon system.
+
+OANDA/forex sync was removed 2026-09-30 (user decision — see
+docs/REQUIREMENT_TRACKER.md): this used to unconditionally re-walk OANDA's
+full transaction ledger and re-insert its real closed trades every run.
+Once forex data was deleted from trade_outcomes, that loop would silently
+resurrect it on the very next sync — the ledger lives at the broker, not
+in our DB, so a local delete doesn't make the broker forget its own
+history. src/outcomes/tracker.py's sync_outcomes() (OANDA-specific) is no
+longer called from anywhere live.
 
 Run from the project root with the venv active:
     python -m src.scripts.sync_outcomes
@@ -15,12 +24,10 @@ from sqlalchemy import func, select
 
 from src.auth.service import active_trading_users
 from src.broker.alpaca import AlpacaBroker
-from src.broker.oanda import OandaBroker
 from src.config import load_settings
 from src.data.db import get_engine
 from src.data.db import trade_outcomes as trade_outcomes_table
 from src.outcomes.alpaca_tracker import sync_alpaca_outcomes
-from src.outcomes.tracker import sync_outcomes
 
 
 async def main() -> None:
@@ -28,16 +35,8 @@ async def main() -> None:
     engine = get_engine(settings.db_path)
 
     for user_ctx in active_trading_users(engine):
-        if user_ctx.execution_mode == "demo":
-            async with OandaBroker(user_ctx.settings) as broker:
-                new_count = await sync_outcomes(engine, broker, user_ctx.user_id, execution_mode="demo")
-            print(f"{user_ctx.email}: {new_count} new closed OANDA trade(s) recorded this sync")
-        # PaperBroker maintains no transaction ledger (see tracker.py docstring) — nothing to sync there
-
         # Alpaca's own paper account is always the real (non-simulated) one
-        # regardless of this user's OANDA-side paper/demo mode — see
-        # src/broker/alpaca.py's module docstring — so it's synced
-        # independently of the execution_mode check above.
+        # — see src/broker/alpaca.py's module docstring.
         if user_ctx.settings.alpaca_api_key:
             async with AlpacaBroker(user_ctx.settings) as broker:
                 new_count = await sync_alpaca_outcomes(engine, broker, user_ctx.user_id, execution_mode="demo")

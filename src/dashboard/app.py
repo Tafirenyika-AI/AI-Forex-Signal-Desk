@@ -105,7 +105,6 @@ from src.data.db import (
 from src.execution.paper_broker import PaperBroker
 from src.execution.service import ExecutionService
 from src.decision.fusion import COMPONENT_WEIGHTS, REGIME_WEIGHT_MULTIPLIERS
-from src.evaluation.promotion_gates import build_report as promotion_build_report
 from src.knowledge.retrieval import search as knowledge_search
 from src.models.calibration import MIN_SEGMENT_SAMPLES as calibration_MIN_SEGMENT_SAMPLES
 from src.models.calibration import all_reports as calibration_all_reports
@@ -699,34 +698,15 @@ def cached_alpaca_account_state(user_id: int):
     return run_async(_fetch_alpaca_account_state())
 
 
-def current_pl_pct(kill_state: dict | None, week_row, mode: str) -> tuple[float | None, float | None]:
-    """(daily_pl_pct, weekly_pl_pct) — None where that baseline hasn't been
-    recorded yet. Read-only: computed from cached_account_state's live NAV
-    against the day/week starting balance already stored in risk_state /
-    risk_state_weekly, same as Mission Control did inline before this was
-    extracted. Deliberately does NOT call risk_governor's private
-    _get_or_init_day_state/_get_or_init_week_state — those insert a new
-    state row as a side effect if one doesn't exist yet, which is wrong for
-    a read-only display path. Caller wraps this in its own try/except,
-    since a broker-fetch failure shouldn't take down the whole tile row."""
-    account_mode = mode if mode != "shadow" else "demo"
-    daily_pl_pct = None
-    weekly_pl_pct = None
-    if kill_state and kill_state.get("day_start_balance"):
-        state, _ = cached_account_state(account_mode, CURRENT_USER_ID)
-        daily_pl_pct = (state.nav - kill_state["day_start_balance"]) / kill_state["day_start_balance"]
-    if week_row and week_row["week_start_balance"]:
-        state, _ = cached_account_state(account_mode, CURRENT_USER_ID)
-        weekly_pl_pct = (state.nav - week_row["week_start_balance"]) / week_row["week_start_balance"]
-    return daily_pl_pct, weekly_pl_pct
-
-
 def pl_pct_for_broker(broker_kind: str, mode: str) -> tuple[float | None, float | None]:
-    """Same idea as current_pl_pct, but scoped to one broker's own
-    risk_state/risk_state_weekly row and own account NAV — each broker has
-    independent kill-switch/loss-limit state now (governor.py keys it
-    (user_id, day/iso_week, broker)), so a single blended reading would be
-    wrong the moment both brokers have real state on the same day."""
+    """(daily_pl_pct, weekly_pl_pct) — None where that baseline hasn't been
+    recorded yet. Scoped to one broker's own risk_state/risk_state_weekly row
+    and own account NAV — never blended across brokers, since a mismatched
+    NAV vs. a different broker's starting balance is a real bug, not a
+    display nuance. Each broker has independent kill-switch/loss-limit state
+    (governor.py keys it (user_id, day/iso_week, broker)), so a single
+    blended reading would be wrong the moment both brokers have real state
+    on the same day."""
     now = datetime.now(timezone.utc)
     day_key = now.strftime("%Y-%m-%d")
     week_key = f"{now.isocalendar()[0]}-W{now.isocalendar()[1]:02d}"
@@ -1202,13 +1182,8 @@ st.write("")
 # tracked balance, ~$99,999.20, from 2026-08-24). Read-only: fetches the
 # same 15s-cached account state other tabs already use, no new broker
 # calls, and touches nothing about open positions or order execution.
-_AS_STARTING_BALANCE = {"oanda": 10_000.0, "alpaca": 100_000.0}
+_AS_STARTING_BALANCE = {"alpaca": 100_000.0}
 _as_rows = []
-try:
-    _as_o_state, _ = cached_account_state("demo", CURRENT_USER_ID)
-    _as_rows.append(("oanda", _as_o_state.nav))
-except Exception:  # noqa: BLE001 — this banner must never block the rest of the page
-    pass
 if _alpaca_configured():
     try:
         _as_a_state, _ = cached_alpaca_account_state(CURRENT_USER_ID)
@@ -1378,9 +1353,9 @@ st.sidebar.caption(f"📡 Watching: {_markets_summary}" + ("" if _alpaca_configu
 
 st.sidebar.subheader("Scan markets now")
 st.sidebar.caption(
-    "Mode applies to every market above in one pass — OANDA (forex) and Alpaca "
-    "(equities/crypto), same as the automated schedule. Alpaca's own paper account "
-    "always stands in for \"demo\" — it has no separate simulated-fills mode."
+    "Mode applies to every market above in one pass — Alpaca (equities/crypto), "
+    "same as the automated schedule. Alpaca's own paper account always stands in "
+    "for \"demo\" — it has no separate simulated-fills mode."
 )
 _mode_options = ["paper", "demo", "shadow"]
 # Real confusion found live 2026-08-24: without an explicit index this
@@ -1466,8 +1441,8 @@ with tab_mission:
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        stat_tile("Broker environment", settings.oanda_environment.upper(),
-                   "config.py hard-refuses 'live' — this can only ever be practice/demo")
+        stat_tile("Broker environment", "PAPER",
+                   "Alpaca paper-trading account — config.py validates this exactly, never a live URL")
     with c2:
         stat_tile("Active scan mode", scan_mode, "selected in the sidebar")
     with c3:
@@ -1521,7 +1496,11 @@ with tab_mission:
     with c1:
         if kill_state:
             try:
-                daily_pl_pct, _ = current_pl_pct(kill_state, week_row, scan_mode)
+                # Alpaca-scoped explicitly (pl_pct_for_broker), not the old
+                # blended current_pl_pct — with OANDA's risk_state rows gone,
+                # a blended lookup would read Alpaca's day_start_balance
+                # against OANDA's account NAV, a real broker mismatch.
+                daily_pl_pct, _ = pl_pct_for_broker("alpaca", scan_mode)
                 daily_pl_pct = daily_pl_pct or 0.0
                 stat_tile("Today's P/L", f"{daily_pl_pct:+.2%}",
                           f"vs {-risk_governor.DAILY_LOSS_LIMIT_PCT:.1%} daily limit", polarity="positive" if daily_pl_pct >= 0 else "negative")
@@ -1530,7 +1509,7 @@ with tab_mission:
     with c2:
         if week_row and week_row["week_start_balance"]:
             try:
-                _, weekly_pl_pct = current_pl_pct(kill_state, week_row, scan_mode)
+                _, weekly_pl_pct = pl_pct_for_broker("alpaca", scan_mode)
                 stat_tile("This week's P/L", f"{weekly_pl_pct:+.2%}",
                           f"vs {-risk_governor.WEEKLY_LOSS_LIMIT_PCT:.1%} weekly limit", polarity="positive" if weekly_pl_pct >= 0 else "negative")
             except Exception as exc:  # noqa: BLE001
@@ -1541,21 +1520,6 @@ with tab_mission:
     st.write("")
     st.caption(f"{open_signal_count} signal(s) currently awaiting review or authorization — see 🚦 Pending Signals.")
 
-    st.write("")
-    st.markdown("#### Promotion readiness")
-    st.caption(
-        "Autonomous Upgrade Spec sec. 18: this system currently runs auto-execute against "
-        "the real OANDA practice account (Phase C: Demo Autonomous). This is an honest "
-        "measurement of whether it has earned Phase D (Stability) yet — never an automatic "
-        "promotion, and 'not ready' is the expected, correct answer while sample sizes are "
-        "still small. Spec is explicit: do not promote on win rate alone."
-    )
-    promo_report = promotion_build_report(engine, CURRENT_USER_ID)
-    readiness_label = "✅ Ready" if promo_report.ready_for_promotion else "⏳ Not yet"
-    st.markdown(f"**{promo_report.current_phase} → {promo_report.target_phase}: {readiness_label}**")
-    for c in promo_report.criteria:
-        icon = "🟢" if c.passed else ("🔴" if c.passed is False else "⚪")
-        st.markdown(f"{icon} **{c.name}** — {c.description}  \n&nbsp;&nbsp;&nbsp;&nbsp;{c.current_value}")
 
 # ----------------------------------------------------------------- markets --
 with tab_markets:
@@ -1780,7 +1744,7 @@ with tab_signals:
                         st.json(intent["data_freshness"])
 
                 with col_right:
-                    st.markdown("**📋 Manual order ticket — for placing by hand on OANDA if you prefer**")
+                    st.markdown("**📋 Manual order ticket — for placing by hand if you prefer**")
                     ticket_text = (
                         f"Instrument:   {ticket['instrument']}\n"
                         f"Direction:    {ticket['direction']}\n"
@@ -2279,18 +2243,13 @@ with tab_currency:
 
 # ------------------------------------------------------------------ account --
 with tab_account:
-    # Combined portfolio: real broker accounts only (OANDA demo + Alpaca).
-    # The simulated paper ledger is its own separate $100k and would muddy
-    # every total here, so it stays in its own section below. Reuses the same
-    # 15s-cached fetches the per-account sections below already make, so this
-    # adds no extra broker calls.
-    st.subheader("🌐 Combined portfolio (OANDA demo + Alpaca)")
+    # Portfolio: the real Alpaca account. The simulated paper ledger is its
+    # own separate $100k and would muddy every total here, so it stays in
+    # its own section below. Reuses the same 15s-cached fetch the
+    # standalone Alpaca section below already makes, so this adds no extra
+    # broker calls.
+    st.subheader("🌐 Portfolio (Alpaca)")
     _combined_sources: list[tuple[str, object, list]] = []
-    try:
-        _o_state, _o_positions = cached_account_state("demo", CURRENT_USER_ID)
-        _combined_sources.append(("oanda", _o_state, _o_positions))
-    except Exception as exc:  # noqa: BLE001
-        st.warning(f"Combined view: could not load OANDA demo account: {exc!r}")
     if _alpaca_configured():
         try:
             _a_state, _a_positions = cached_alpaca_account_state(CURRENT_USER_ID)
@@ -2319,32 +2278,17 @@ with tab_account:
             "Open positions": _st.open_position_count,
         })
         for _p in _pos:
-            if _bk == "alpaca":
-                _inst = _p["symbol"]
-                _qty = float(_p.get("qty") or 0)
-                if not _qty:
-                    continue
-                _position_rows.append({
-                    "Broker": BROKER_LABELS["alpaca"], "Instrument": _inst,
-                    "Market": ASSET_CLASS_LABELS.get(asset_class_for(_inst), "").split(" · ")[0],
-                    "Side": str(_p.get("side", "")).upper(), "Units": abs(_qty),
-                    "Entry": float(_p.get("avg_entry_price") or 0),
-                    "Not Yet Sold (Unrealized)": float(_p.get("unrealized_pl") or 0),
-                })
-            else:
-                _inst = _p.get("instrument", "")
-                for _side in ("long", "short"):
-                    _leg = _p.get(_side) or {}
-                    _units = float(_leg.get("units", "0") or 0)
-                    if not _units:
-                        continue
-                    _position_rows.append({
-                        "Broker": BROKER_LABELS["oanda"], "Instrument": _inst,
-                        "Market": ASSET_CLASS_LABELS.get(asset_class_for(_inst), "").split(" · ")[0],
-                        "Side": _side.upper(), "Units": abs(_units),
-                        "Entry": float(_leg.get("averagePrice") or 0),
-                        "Not Yet Sold (Unrealized)": float(_leg.get("unrealizedPL") or 0),
-                    })
+            _inst = _p["symbol"]
+            _qty = float(_p.get("qty") or 0)
+            if not _qty:
+                continue
+            _position_rows.append({
+                "Broker": BROKER_LABELS["alpaca"], "Instrument": _inst,
+                "Market": ASSET_CLASS_LABELS.get(asset_class_for(_inst), "").split(" · ")[0],
+                "Side": str(_p.get("side", "")).upper(), "Units": abs(_qty),
+                "Entry": float(_p.get("avg_entry_price") or 0),
+                "Not Yet Sold (Unrealized)": float(_p.get("unrealized_pl") or 0),
+            })
 
     if _broker_rows:
         _total_nav = sum(r["Account Value"] for r in _broker_rows)
@@ -2371,10 +2315,10 @@ with tab_account:
         cc5.metric("Open positions", _total_open)
         st.dataframe(pd.DataFrame(_broker_rows), width="stretch", hide_index=True)
         if _position_rows:
-            st.markdown("**All open positions, both brokers**")
+            st.markdown("**All open positions**")
             st.dataframe(pd.DataFrame(_position_rows), width="stretch", hide_index=True)
         else:
-            st.caption("No open positions on either broker.")
+            st.caption("No open positions.")
         st.caption(
             "\"Not yet sold\" money moves with the market until you close the position — it isn't "
             "locked in, and a leveraged position moves it faster. Only closed (sold) trades count "
@@ -2384,14 +2328,12 @@ with tab_account:
         )
     st.divider()
 
-    for mode in ["paper", "demo"]:
-        st.subheader(f"{'📝 Paper' if mode == 'paper' else '🏦 OANDA Demo'} account")
-        try:
-            state, positions = cached_account_state(mode, CURRENT_USER_ID)
-        except Exception as exc:  # noqa: BLE001
-            st.warning(f"Could not load {mode} account: {exc!r}")
-            continue
-
+    st.subheader("📝 Paper account")
+    try:
+        state, positions = cached_account_state("paper", CURRENT_USER_ID)
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"Could not load paper account: {exc!r}")
+    else:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Balance", f"${state.balance:,.2f}")
         c2.metric("NAV", f"${state.nav:,.2f}")
@@ -2402,7 +2344,7 @@ with tab_account:
             st.dataframe(pd.DataFrame(positions), width="stretch", hide_index=True)
         else:
             st.caption("No open positions.")
-        st.divider()
+    st.divider()
 
     st.subheader("📈 Alpaca account (equities + crypto, paper)")
     if not _alpaca_configured():
@@ -2459,13 +2401,13 @@ with tab_risk:
     st.write("")
     st.markdown("#### Current state")
     st.caption(
-        "OANDA and Alpaca each have their own real account balance, so the kill switch and "
-        "daily/weekly loss limits are tracked independently per broker — one broker's bad "
-        "day never trips (or masks) the other's."
+        "Kill switch and daily/weekly loss limits are tracked per broker — "
+        "see src/risk/governor.py."
     )
-    broker_kinds_present = ["oanda"] + (["alpaca"] if _alpaca_configured() else [])
-    kill_cols = st.columns(len(broker_kinds_present))
-    for bk, col in zip(broker_kinds_present, kill_cols):
+    broker_kinds_present = ["alpaca"] if _alpaca_configured() else []
+    if not broker_kinds_present:
+        st.caption("Alpaca isn't configured for this account yet.")
+    for bk, col in zip(broker_kinds_present, st.columns(len(broker_kinds_present) or 1)):
         # Combined across all three sources (manual/reconciliation, daily,
         # weekly — see get_kill_switch_state's docstring), not just today's
         # daily row: a manual stop or a still-live weekly breach must show
