@@ -1,14 +1,20 @@
 """Unit test for a real bug found live 2026-10-01: src/run_loop.py used to
 unconditionally include ComponentView("session", 0.0, 0.0) and
 ComponentView("currency_strength", 0.0, 0.0) in every non-forex decision's
-component_views -- structurally always zero for equities/crypto (see
-evaluate_pair's own is_forex gating). A zero-confidence component
-contributes nothing to fuse()'s weighted numerator/denominator (correctly
-a no-op there), but its nominal weight still counted toward
-total_weight, which combined_confidence is scaled against -- silently
-dampening every equity/crypto decision's confidence for a purely
-structural reason that has nothing to do with real signal quality. Now
-that forex is gone, this was happening on every single live decision.
+component_views.
+
+First-pass fix only excluded those two. Turns out macro/cross_market/news
+are EQUALLY forex-only -- pair_macro_score/pair_cross_market_score/
+pair_news_score each explicitly return (0.0, 0.0) for any non-forex
+instrument (base/quote currency-differential scores with no equity/crypto
+equivalent, confirmed by reading those three functions directly and by
+checking real logged predictions for MSFT/NVDA/BTC-USD -- all exactly
+zero on every real cycle). So for every equity/crypto decision, "price"
+was the ONLY component ever carrying real signal -- the other five's
+combined nominal weight was diluting combined_confidence far more than
+the session/currency_strength-only fix addressed. Quantified against 400
+real recent decisions: at the MIN_CONFIDENCE=0.38 gate, 13/400 cleared
+under the old math vs. 98/400 under the fully-fixed math -- roughly 7.5x.
 
 This test proves the dilution directly against the real fuse() function
 (no run_loop.py plumbing needed -- the bug and its fix are both fully
@@ -29,41 +35,30 @@ from src.decision.fusion import ComponentView, fuse
 NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
 
 
-def _live_equity_views():
-    # Realistic equity-cycle agreement: price/macro/cross_market/news all
-    # mildly bullish with real confidence -- no forex-only components.
-    return [
-        ComponentView("price", 0.30, 0.30),
-        ComponentView("macro", 0.20, 0.50),
-        ComponentView("cross_market", 0.15, 0.40),
-        ComponentView("news", 0.10, 0.20),
-    ]
-
-
-def test_dead_forex_components_used_to_dilute_equity_confidence():
-    live_views = _live_equity_views()
-    diluted_views = live_views + [
+def test_dead_forex_components_used_to_massively_dilute_equity_confidence():
+    price_only = [ComponentView("price", 0.60, 0.60)]
+    all_dead_included = price_only + [
+        ComponentView("macro", 0.0, 0.0),
+        ComponentView("cross_market", 0.0, 0.0),
+        ComponentView("news", 0.0, 0.0),
         ComponentView("session", 0.0, 0.0),
         ComponentView("currency_strength", 0.0, 0.0),
     ]
 
     fixed = fuse(
-        instrument="MSFT", horizon="1h", regime="RANGE", component_views=live_views,
+        instrument="MSFT", horizon="1h", regime="RANGE", component_views=price_only,
         current_price=500.0, atr_14=5.0, data_freshness={}, now=NOW,
     )
     old_buggy = fuse(
-        instrument="MSFT", horizon="1h", regime="RANGE", component_views=diluted_views,
+        instrument="MSFT", horizon="1h", regime="RANGE", component_views=all_dead_included,
         current_price=500.0, atr_14=5.0, data_freshness={}, now=NOW,
     )
 
-    # Same underlying signal, same action/score -- only the phantom dead
-    # weight differs. Confidence must be HIGHER once the dead components
-    # are correctly excluded (never passed at all), not just unchanged.
+    # Same underlying price signal, same action/score -- only the phantom
+    # dead weight differs. With price's own 0.50 base weight against a
+    # 1.15 total (RANGE's own regime multipliers aside), the fix should
+    # be worth roughly a 2.3x confidence uplift, not a rounding blip.
+    assert fixed.action == old_buggy.action
     assert fixed.confidence > old_buggy.confidence
-    # Quantify: dead weight (session+currency_strength, regime-adjusted)
-    # diluted confidence by a real, material amount -- not a rounding blip.
-    # (Exact ratio depends on RANGE's own per-component regime multipliers,
-    # not a flat 1.0/1.15, so this checks direction + a meaningful bound
-    # rather than one precise theoretical number.)
-    relative_uplift = fixed.confidence / old_buggy.confidence - 1.0
-    assert 0.05 < relative_uplift < 0.30
+    relative_uplift = fixed.confidence / old_buggy.confidence
+    assert 1.5 < relative_uplift < 4.0

@@ -640,47 +640,56 @@ async def _evaluate_one_horizon(
 
     p_up = float(predict_proba_up(model, last_row)[0])
 
-    component_views = [
-        price_component_view(p_up),
-        ComponentView("macro", macro_score, macro_conf),
-        ComponentView("cross_market", cross_market_score, cross_market_conf),
-        ComponentView("news", news_score, news_conf),
-    ]
-    # Real bug found live 2026-10-01: session/currency_strength are
-    # structurally (0.0, 0.0) for non-forex (see evaluate_pair's own
-    # is_forex gating) -- a zero-confidence component contributes nothing
-    # to fuse()'s weighted numerator/denominator (correctly a no-op there),
-    # but its nominal weight (0.10 + 0.05 = 0.15) still counted toward
-    # fuse()'s total_weight, which combined_confidence is scaled against.
-    # That silently dampened EVERY equity/crypto decision's confidence by
-    # ~13% (0.15 of dead weight diluting an otherwise-1.0 live total) for
-    # a structural reason that has nothing to do with actual signal
-    # quality -- now that forex is gone, this was happening on literally
-    # every single live decision. Only constructing these views when
-    # they're genuinely applicable removes the phantom weight entirely.
+    component_views = [price_component_view(p_up)]
+    # Real bug found live 2026-10-01, corrected same day: my first pass at
+    # this only excluded session/currency_strength for non-forex. Turns out
+    # macro/cross_market/news are EQUALLY forex-only -- pair_macro_score,
+    # pair_cross_market_score, and pair_news_score (src/models/*_model.py)
+    # each explicitly `if "_" not in pair: return 0.0, 0.0` internally,
+    # being base/quote CURRENCY-differential scores with no equity/crypto
+    # equivalent (each one's own docstring says so). They're called
+    # unconditionally in evaluate_pair, so this was easy to miss from
+    # run_loop.py alone -- confirmed by reading those three functions
+    # directly, and by checking real logged predictions for MSFT/NVDA/
+    # BTC-USD, which showed macro/cross_market/news all at score=0,
+    # confidence=0 on every real cycle. For every equity/crypto decision
+    # (100% of live trading right now), price was the ONLY component ever
+    # carrying real signal -- the other five's nominal weight (1.15 total
+    # before this, 0.65 of it genuinely dead) was diluting
+    # combined_confidence far more than the session/currency_strength-only
+    # fix addressed. Only constructing a view when it's genuinely
+    # applicable removes ALL the phantom weight, not just two slices of it.
     if asset_class_for(pair) == "forex":
+        component_views.append(ComponentView("macro", macro_score, macro_conf))
+        component_views.append(ComponentView("cross_market", cross_market_score, cross_market_conf))
+        component_views.append(ComponentView("news", news_score, news_conf))
         component_views.append(ComponentView("session", session_score, session_conf))
         component_views.append(ComponentView("currency_strength", currency_strength_score, currency_strength_conf))
     data_freshness = {"price": price_age_seconds, "candles": candle_age_seconds}
 
-    # Real bug found 2026-09-22 (external review, P1-02): the meta-model is
-    # trained EXCLUSIVELY on OANDA outcomes (see train_meta_model.py's
-    # load_linked_features(), which filters broker == "oanda") but used to
-    # be applied to every instrument regardless of asset class. Not just a
-    # scope mismatch in principle: equity/crypto instruments always carry
-    # session_score/currency_strength_score == 0.0 (see is_forex gating
-    # earlier in evaluate_pair) — real, structural zeros the model was
-    # never trained to distinguish from a genuine neutral forex-session
-    # reading. Those features aren't MISSING (which _apply_meta_model
-    # already refuses to score against), so nothing caught this — the
-    # model would confidently score an equity/crypto trade against
-    # training-distribution-violating inputs that look numerically valid.
-    # "Refuse unsupported model use" (the brief's own P1-02 wording).
-    meta_model_for_instrument = meta_model if asset_class_for(pair) == "forex" else None
+    # Real bug found 2026-09-22 (external review, P1-02): the meta-model
+    # used to be trained EXCLUSIVELY on OANDA outcomes but applied to every
+    # instrument regardless of asset class — a real scope mismatch (see
+    # train_meta_model.py's own comment on why mixing distributions
+    # matters). Fixed then by scoping application to forex only, matching
+    # training to forex only.
+    #
+    # Reversed 2026-10-01: forex/OANDA trading has stopped entirely (user
+    # decision), so train_meta_model.py's load_linked_features() is no
+    # longer broker-filtered — every real linked outcome it can possibly
+    # see now IS equity/crypto. Gating application to forex here would mean
+    # a model trained exclusively on equity/crypto data could only ever be
+    # applied to forex, which no longer generates any signals at all —
+    # the model would be deployed but permanently inert. The gate now
+    # excludes forex specifically (rather than naming every non-forex
+    # asset class) so this tracks train_meta_model.py's own scope exactly;
+    # if forex trading is ever reintroduced, both this gate and that
+    # module's filter need a real decision together, not independently.
+    meta_model_for_instrument = meta_model if asset_class_for(pair) != "forex" else None
     if meta_model is not None and meta_model_for_instrument is None:
         logger.debug(
-            "%s/%s: meta-model deployed but scoped to OANDA/forex outcomes only — "
-            "not applied to this non-forex instrument, heuristic confidence stands",
+            "%s/%s: meta-model deployed but scoped to non-forex outcomes only — "
+            "not applied to this forex instrument, heuristic confidence stands",
             pair, cfg.label,
         )
 

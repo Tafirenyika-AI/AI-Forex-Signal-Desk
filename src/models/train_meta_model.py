@@ -40,7 +40,23 @@ from src.data.db import upsert_insert as insert
 from src.data.db import trade_outcomes as trade_outcomes_table
 
 MIN_SAMPLES = 30
-COMPONENTS = ["price", "macro", "cross_market", "news"]
+# Real bug found live 2026-10-01, same day as the broker filter below was
+# relaxed: "macro"/"cross_market"/"news" are forex-only (same as
+# "session"/"currency_strength" always were — pair_macro_score/pair_
+# cross_market_score/pair_news_score each return (0.0, 0.0) for any
+# non-forex instrument). run_loop.py's component_views now correctly
+# EXCLUDES them entirely for non-forex (not just zeroes them) — so
+# training on them here would (a) never find a matching row again, since
+# load_linked_features below requires every listed component to be
+# present in predictions_table, which it structurally won't be for any
+# future equity/crypto cycle, and (b) even if it could train, the
+# resulting feature_cols wouldn't be found in a non-forex component_views
+# list at application time, so _apply_meta_model would always silently
+# refuse to apply (treats a missing component as "can't score this,"
+# correctly). "price" is the only component that exists for every asset
+# class this model can now ever be applied to (see its gate in
+# run_loop.py, which excludes forex specifically).
+COMPONENTS = ["price"]
 MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "models"
 MODEL_NAME = "meta_model"
 
@@ -106,16 +122,27 @@ def load_linked_features(engine: Engine) -> pd.DataFrame:
             .select_from(trade_outcomes_table)
             .join(trade_intents_table, trade_intents_table.c.id == trade_outcomes_table.c.trade_intent_id)
             .where(trade_outcomes_table.c.outcome.in_(["WIN", "LOSS"]))
-            # OANDA only: macro/news/cross_market/session components are all
-            # trivially (0.0, 0.0) for non-forex instruments (see Phase 1's
-            # guards in src/risk/governor.py and the src/models/*_model.py
-            # score functions) — mixing in Alpaca outcomes now that they're
-            # tracked (src/outcomes/alpaca_tracker.py) would train this
-            # shared meta-model on two structurally different feature
-            # distributions without it knowing that's what's happening.
-            # Revisit once Alpaca has its own real signal richness or
-            # enough volume to justify a separate model.
-            .where(trade_outcomes_table.c.broker == "oanda")
+            # Broker-agnostic since 2026-10-01: forex/OANDA trading has
+            # stopped entirely (user decision — see docs/REQUIREMENT_
+            # TRACKER.md / memory), so there is no longer a "mixing two
+            # structurally different feature distributions" risk to guard
+            # against — every real linked outcome going forward is Alpaca
+            # equity/crypto, a single consistent distribution.
+            #
+            # Real, disclosed consequence (same root cause fixed live in
+            # run_loop.py's component_views the same day, see its own
+            # comment): macro/cross_market/news are ALSO forex-only —
+            # pair_macro_score/pair_cross_market_score/pair_news_score
+            # each return (0.0, 0.0) for any non-forex instrument, same as
+            # session/currency_strength already were. So of this
+            # COMPONENTS list's 4 entries, only "price" will carry any
+            # real variance when trained purely on equity/crypto outcomes
+            # — the other 3 become constant-zero columns. Harmless for
+            # LogisticRegression (it just learns near-zero weight for a
+            # constant feature) but worth knowing: this meta-model's real
+            # learning capacity on equity data is effectively just
+            # price_agreement/price_conf until equity-aware macro/cross-
+            # market/news scoring exists, which it doesn't yet.
         ).mappings().all()
 
         records = []

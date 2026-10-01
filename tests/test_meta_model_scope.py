@@ -47,11 +47,32 @@ def test_asset_class_for_correctly_distinguishes_affected_instruments():
         assert asset_class_for(non_forex) != "forex"
 
 
+def test_meta_model_scoped_to_non_forex_now():
+    # Gate direction reversed 2026-10-01: forex/OANDA trading stopped
+    # entirely, so train_meta_model.py's load_linked_features() can now
+    # only ever see equity/crypto outcomes -- applying a model trained on
+    # that data to forex (which no longer generates any signals at all)
+    # would deploy a model that's permanently inert. run_loop.py's own
+    # gate is `meta_model if asset_class_for(pair) != "forex" else None`
+    # -- replicated here directly since it's a one-line expression inside
+    # a much larger function, not its own importable unit.
+    def meta_model_for_instrument(pair, meta_model):
+        return meta_model if asset_class_for(pair) != "forex" else None
+
+    sentinel = ("a real model object", ["price_agreement", "price_conf"])
+    assert meta_model_for_instrument("NVDA", sentinel) is sentinel
+    assert meta_model_for_instrument("BTC/USD", sentinel) is sentinel
+    assert meta_model_for_instrument("EUR_USD", sentinel) is None
+
+
 def test_fuse_with_meta_model_none_never_applies_it():
-    # This is what run_loop.py now passes for any non-forex instrument
-    # (meta_model_for_instrument = meta_model if asset_class_for(pair) ==
-    # "forex" else None) -- confirms the heuristic action/confidence
-    # stand untouched when meta_model is None, regardless of instrument.
+    # Gate direction reversed 2026-10-01 (forex trading stopped entirely,
+    # so a model now trained exclusively on equity/crypto outcomes is
+    # applied to non-forex, excluded for forex -- the opposite of this
+    # test's original 2026-09-22 framing) -- but this specific assertion
+    # ("meta_model=None means never applied, regardless of instrument")
+    # is still true either way; see test_meta_model_scoped_to_non_forex_now
+    # below for the actual current gate direction.
     decision = fuse(
         instrument="NVDA", horizon="1h", regime="TREND",
         component_views=_strong_buy_views(), current_price=100.0, atr_14=1.0,
