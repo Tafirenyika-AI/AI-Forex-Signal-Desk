@@ -337,7 +337,19 @@ class AlpacaBroker(BrokerAdapter):
             body = {
                 "symbol": instrument, "qty": str(qty), "side": side,
                 "type": "market" if order_type == "MARKET" else "limit",
-                "time_in_force": "day",
+                # Real bug found 2026-10-01 (live): "day" applies to the
+                # WHOLE bracket on Alpaca, including the stop-loss/take-
+                # profit CHILD legs -- not just the entry. A position opened
+                # with a day bracket has its protective orders silently
+                # expire/cancel at that same day's market close, leaving it
+                # completely unprotected from the next day onward with
+                # nothing to re-establish protection. Confirmed live: a real
+                # NVDA position's bracket legs both died at market close the
+                # day it opened (one expired, which auto-cancels the OCO
+                # sibling), and it then sat unprotected for 19 days until a
+                # later, unrelated order happened to close it. "gtc" matches
+                # crypto's own (correctly) persistent protection below.
+                "time_in_force": "gtc",
                 "client_order_id": client_order_id,
             }
             if order_type == "LIMIT":

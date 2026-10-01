@@ -1801,6 +1801,40 @@ with tab_signals:
 # --------------------------------------------------------------- trade history --
 with tab_trades:
     st.subheader("Every trade the system has actually placed, and why")
+
+    # Open positions first -- the realized P&L below only covers CLOSED
+    # trades; an open position's unrealized P&L isn't in that number at
+    # all, and showing closed-only P&L without this context can look like
+    # a loss even when a large open gain more than offsets it (real
+    # confusion this caused live 2026-10-01, see trade_outcomes's FIFO
+    # rewrite in src/outcomes/alpaca_tracker.py for the related accuracy fix).
+    if _alpaca_configured():
+        try:
+            _open_state, _open_positions = cached_alpaca_account_state(CURRENT_USER_ID)
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"Could not load open positions: {exc!r}")
+        else:
+            if _open_positions:
+                st.markdown("#### Currently open — not yet closed, not counted below")
+                _open_rows = [
+                    {
+                        "Instrument": p["symbol"], "Side": str(p.get("side", "")).upper(),
+                        "Units": abs(float(p.get("qty") or 0)),
+                        "Entry": float(p.get("avg_entry_price") or 0),
+                        "Current": float(p.get("current_price") or 0),
+                        "Unrealized P&L": float(p.get("unrealized_pl") or 0),
+                    }
+                    for p in _open_positions if float(p.get("qty") or 0)
+                ]
+                if _open_rows:
+                    _open_total = sum(r["Unrealized P&L"] for r in _open_rows)
+                    st.dataframe(pd.DataFrame(_open_rows), width="stretch", hide_index=True)
+                    st.caption(
+                        f"Open positions' unrealized P&L: ${_open_total:+,.2f} — moves with the "
+                        "market until closed, not included in the closed-trade totals below."
+                    )
+                st.divider()
+
     outcomes = fetch_trade_outcomes(engine, CURRENT_USER_ID)
 
     if not outcomes:

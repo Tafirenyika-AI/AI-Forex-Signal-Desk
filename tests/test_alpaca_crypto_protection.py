@@ -98,3 +98,33 @@ def test_no_stop_no_take_profit_no_warnings(caplog):
 
     assert result.status == "accepted"
     assert not any("UNPROTECTED" in r.message or "take_profit_price" in r.message for r in caplog.records)
+
+
+def test_equity_bracket_uses_gtc_not_day():
+    # Real bug found live 2026-10-01: "day" applies to the WHOLE bracket on
+    # Alpaca, including the stop-loss/take-profit CHILD legs, not just the
+    # entry -- a position opened with a day bracket has its protective
+    # orders silently expire/cancel at that same day's market close.
+    # Confirmed live: a real NVDA position's bracket legs both died at
+    # market close the day it opened, then sat unprotected for 19 days
+    # until an unrelated order happened to close it. This test proves the
+    # equity order body now requests "gtc", matching crypto's own (already
+    # correct) persistent protection.
+    broker = AlpacaBroker(_fake_settings())
+    captured = {}
+
+    async def fake_request(client, method, path, **kwargs):
+        if method == "POST" and path == "/orders":
+            captured.update(kwargs["json"])
+            return {"id": "entry-4", "status": "accepted"}
+        raise AssertionError(f"unexpected call: {method} {path}")
+
+    broker._request = fake_request
+    result = _run(broker.place_order(
+        instrument="MSFT", units=100, client_order_id="test-entry-4",
+        stop_loss_price=490.0, take_profit_price=520.0,
+    ))
+
+    assert result.status == "accepted"
+    assert captured["time_in_force"] == "gtc"
+    assert captured["order_class"] == "bracket"
