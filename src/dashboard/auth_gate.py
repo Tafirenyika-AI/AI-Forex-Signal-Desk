@@ -88,13 +88,24 @@ def _render_logo(width_px: int = 150) -> None:
     """One self-contained HTML string (image + centering div, all in a
     single st.markdown call) — safe from the div-spanning-multiple-calls
     bug described in the module docstring, since nothing else needs to
-    nest inside it."""
+    nest inside it.
+
+    TashiQ rebrand (2026-10-01): logo.png is now the icon mark alone (the
+    old asset baked a full wordmark into the bitmap, which only reads
+    clearly at generous sizes — the icon alone still scales down cleanly
+    to a 44px header icon or a 16px browser favicon, see the dashboard's
+    own header usage). The "TashiQ" wordmark is real HTML/CSS text here
+    instead, styled to match the source logo's own two-tone treatment
+    (light "Tashi" + accent-blue "Q") rather than a second raster asset."""
     b64 = _logo_base64(LOGO_PATH.stat().st_mtime if LOGO_PATH.exists() else 0.0)
     if b64 is None:
         return
     st.markdown(
         f'<div style="text-align:center; margin-bottom:8px;">'
-        f'<img src="data:image/png;base64,{b64}" width="{width_px}" /></div>',
+        f'<img src="data:image/png;base64,{b64}" width="{width_px}" /><br/>'
+        f'<span style="font-family:\'Inter\',sans-serif; font-weight:800; '
+        f'font-size:1.3rem; letter-spacing:0.02em; color:var(--af-ink);">Tashi'
+        f'<span style="color:var(--af-accent);">Q</span></span></div>',
         unsafe_allow_html=True,
     )
 

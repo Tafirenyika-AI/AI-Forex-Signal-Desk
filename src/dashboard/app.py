@@ -122,48 +122,49 @@ from src.risk import governor as risk_governor
 from src.run_loop import run_once
 
 st.set_page_config(
-    page_title="AI Forex — Signal Desk",
+    page_title="TashiQ — AI Trading Desk",
     page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "📡",
     layout="wide",
 )
 
 # ============================================================== design system
-# Clean, modern light theme (user-requested reversal, 2026-09-22, replacing
-# the earlier cyberpunk/neon HUD look — "im nolonger liking this whole back
-# theme in need nice light responsive one"). Modeled on how other broker
-# platforms present: a plain white/near-white surface, Inter type, soft
-# shadows instead of glow, a light modern sidebar.
-#
-# Colors follow the dataviz skill's validated reference palette
-# (references/palette.md) — the same categorical slots (accent/equity/
-# crypto) and status tokens this dashboard used before the cyberpunk
-# detour, reused unchanged rather than re-validated.
+# TashiQ rebrand, dark theme (user-requested 2026-10-01, to match the new
+# TashiQ logo's dark/blue identity — src/dashboard/assets/logo.png).
+# Dark navy/charcoal page and surfaces, the logo's own sampled accent blue
+# (#2fa6ff), every status/semantic color re-picked and contrast-checked
+# against the new dark background (not just inverted from the old light
+# values — see the commit that introduced this for the actual contrast
+# ratios checked). This is the THIRD distinct visual direction this
+# dashboard has had (cyberpunk/neon HUD → clean light → this) — don't
+# assume it's permanent; this project's aesthetic preference changes for
+# real, documented reasons each time, see git history / memory for both
+# prior iterations rather than assuming today's is final.
 DESIGN_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
 :root {
-  --af-page: #f9f9f7;
-  --af-surface: #fcfcfb;
-  --af-surface-solid: #fcfcfb;
-  --af-ink: #0b0b0b;
-  --af-ink-secondary: #52514e;
-  --af-ink-muted: #898781;
-  --af-border: rgba(11,11,11,0.10);
-  --af-border-bright: rgba(42,120,214,0.45);
+  --af-page: #0a0e14;
+  --af-surface: #141920;
+  --af-surface-solid: #141920;
+  --af-ink: #f2f4f7;
+  --af-ink-secondary: #aab2bf;
+  --af-ink-muted: #8b92a0;
+  --af-border: rgba(255,255,255,0.10);
+  --af-border-bright: rgba(47,166,255,0.45);
 
-  --af-good-text: #006300;
-  --af-good-bg: rgba(12,163,12,0.12);
-  --af-bad-text: #c73c3b;
-  --af-bad-bg: rgba(227,73,72,0.12);
-  --af-neutral-text: #898781;
-  --af-neutral-bg: rgba(137,135,129,0.14);
-  --af-accent: #2a78d6;
-  --af-accent-bg: rgba(42,120,214,0.10);
-  --af-equity: #eb6834;
-  --af-equity-bg: rgba(235,104,52,0.12);
-  --af-crypto: #1baf7a;
-  --af-crypto-bg: rgba(27,175,122,0.12);
+  --af-good-text: #3ddc84;
+  --af-good-bg: rgba(61,220,132,0.14);
+  --af-bad-text: #ff6b6b;
+  --af-bad-bg: rgba(255,107,107,0.14);
+  --af-neutral-text: #8b92a0;
+  --af-neutral-bg: rgba(139,146,160,0.14);
+  --af-accent: #2fa6ff;
+  --af-accent-bg: rgba(47,166,255,0.14);
+  --af-equity: #ff9966;
+  --af-equity-bg: rgba(255,153,102,0.14);
+  --af-crypto: #2fe0a8;
+  --af-crypto-bg: rgba(47,224,168,0.14);
 
   --af-space-1: 4px;
   --af-space-2: 8px;
@@ -178,8 +179,8 @@ DESIGN_CSS = """
   --af-radius-lg: 20px;
   --af-radius-pill: 999px;
 
-  --af-shadow-1: 0 1px 4px rgba(11,11,11,0.05);
-  --af-shadow-2: 0 2px 10px rgba(11,11,11,0.08);
+  --af-shadow-1: 0 1px 4px rgba(0,0,0,0.30);
+  --af-shadow-2: 0 2px 10px rgba(0,0,0,0.40);
 
   --af-text-xs: 0.74rem;
   --af-text-sm: 0.84rem;
@@ -190,12 +191,12 @@ DESIGN_CSS = """
 
   /* Chart-mark tier — see module note above. Fixed (Plotly figures render
      server-side and can't react to CSS), matches CHART_COLORS below. */
-  --af-chart-surface: #fcfcfb;
-  --af-chart-grid: #e1e0d9;
-  --af-chart-axis: #c3c2b7;
-  --af-chart-ink: #0b0b0b;
-  --af-chart-ink-secondary: #52514e;
-  --af-chart-ink-muted: #898781;
+  --af-chart-surface: #141920;
+  --af-chart-grid: #1e242d;
+  --af-chart-axis: #3a4350;
+  --af-chart-ink: #f2f4f7;
+  --af-chart-ink-secondary: #aab2bf;
+  --af-chart-ink-muted: #8b92a0;
 }
 
 html, body, .stApp {
@@ -204,7 +205,7 @@ html, body, .stApp {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 [data-testid="stSidebar"] {
-  background: #ffffff;
+  background: var(--af-surface);
   border-right: 1px solid var(--af-border);
 }
 [data-testid="stSidebar"] > div:first-child { padding-top: var(--af-space-4); }
@@ -213,8 +214,8 @@ h1, h2, h3, h4 { font-family: 'Inter', sans-serif !important; font-weight: 700 !
 p, span, div, label { color: var(--af-ink); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: var(--af-page); }
-::-webkit-scrollbar-thumb { background: rgba(16,21,28,0.18); border-radius: var(--af-radius-pill); }
-::-webkit-scrollbar-thumb:hover { background: rgba(16,21,28,0.32); }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: var(--af-radius-pill); }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.24); }
 
 .stButton > button {
   background: var(--af-accent);
@@ -226,8 +227,8 @@ p, span, div, label { color: var(--af-ink); }
   transition: box-shadow 0.15s ease, background 0.15s ease, transform 0.1s ease;
 }
 .stButton > button:hover {
-  background: #1f63b8;
-  box-shadow: 0 4px 12px rgba(42,120,214,0.28);
+  background: #1c7fc4;
+  box-shadow: 0 4px 12px rgba(47,166,255,0.32);
   color: #ffffff;
 }
 [data-testid="stProgress"] > div > div > div > div { background: var(--af-accent) !important; }
@@ -249,7 +250,7 @@ p, span, div, label { color: var(--af-ink); }
 }
 [data-testid="stTextInputRootElement"]:focus-within {
   border-color: var(--af-border-bright) !important;
-  box-shadow: 0 0 0 3px rgba(42,120,214,0.15);
+  box-shadow: 0 0 0 3px rgba(47,166,255,0.18);
 }
 a, a:visited { color: var(--af-accent) !important; }
 img { border-radius: var(--af-radius-md); }
@@ -432,20 +433,20 @@ st.markdown(DESIGN_CSS, unsafe_allow_html=True)
 # the dataviz skill's validated status/diverging colors (references/
 # palette.md) for win/loss and signed-score charts.
 CHART_COLORS = {
-    "surface": "#fcfcfb",
-    "grid": "#e1e0d9",
-    "axis": "#c3c2b7",
-    "ink": "#0b0b0b",
-    "ink_secondary": "#52514e",
-    "ink_muted": "#898781",
-    "good": "#0ca30c",
-    "warning": "#fab219",
-    "serious": "#ec835a",
-    "critical": "#d03b3b",
-    "diverging_pos": "#2a78d6",
-    "diverging_neg": "#e34948",
-    "diverging_mid": "#f0efec",
-    "accent": "#2a78d6",
+    "surface": "#141920",
+    "grid": "#1e242d",
+    "axis": "#3a4350",
+    "ink": "#f2f4f7",
+    "ink_secondary": "#aab2bf",
+    "ink_muted": "#8b92a0",
+    "good": "#3ddc84",
+    "warning": "#ffc94d",
+    "serious": "#ff9966",
+    "critical": "#ff6b6b",
+    "diverging_pos": "#2fa6ff",
+    "diverging_neg": "#ff6b6b",
+    "diverging_mid": "#4a5260",
+    "accent": "#2fa6ff",
 }
 
 
@@ -488,7 +489,7 @@ def format_duration(seconds: float) -> str:
 
 
 def _sparkline_svg(values: list[float], width: int = 64, height: int = 20,
-                    accent: str = "#2a78d6", deemphasis: str = "#c3c2b7") -> str:
+                    accent: str = "#2fa6ff", deemphasis: str = "#3a4350") -> str:
     """12-point-style sparkline as raw inline SVG (never Plotly) — a full
     Plotly.js instance per stat tile would mean 15+ competing chart inits
     on tabs like Mission Control/Currency Map on every rerun. Matches the
@@ -923,10 +924,10 @@ def equity_curve_figure(df: pd.DataFrame) -> go.Figure:
         go.Scatter(
             x=ordered["closed_at"], y=ordered["cumulative_pl"],
             mode="lines+markers",
-            line=dict(color="#2a78d6", width=2),
-            marker=dict(size=6, color="#2a78d6"),
+            line=dict(color="#2fa6ff", width=2),
+            marker=dict(size=6, color="#2fa6ff"),
             fill="tozeroy",
-            fillcolor="rgba(42,120,214,0.10)",
+            fillcolor="rgba(47,166,255,0.14)",
             hovertemplate="%{x|%b %d, %H:%M}<br>Cumulative P&L: $%{y:,.2f}<extra></extra>",
             name="Cumulative P&L",
         )
@@ -936,14 +937,14 @@ def equity_curve_figure(df: pd.DataFrame) -> go.Figure:
         height=260,
         xaxis=dict(showgrid=False, title=None),
         yaxis=dict(
-            showgrid=True, gridcolor="rgba(137,135,129,0.25)", title="Cumulative P&L ($)",
-            zeroline=True, zerolinecolor="rgba(137,135,129,0.5)", zerolinewidth=1,
+            showgrid=True, gridcolor="rgba(170,178,191,0.15)", title="Cumulative P&L ($)",
+            zeroline=True, zerolinecolor="rgba(170,178,191,0.35)", zerolinewidth=1,
         ),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
-        font=dict(color="#898781"),
-        hoverlabel=dict(bgcolor="#1a1a19", font_color="#ffffff"),
+        font=dict(color="#8b92a0"),
+        hoverlabel=dict(bgcolor="#242b36", font_color="#ffffff"),
     )
     return fig
 
@@ -964,12 +965,12 @@ def per_trade_pl_figure(df: pd.DataFrame) -> go.Figure:
         margin=dict(l=10, r=10, t=10, b=10),
         height=220,
         xaxis=dict(showgrid=False, title=None),
-        yaxis=dict(showgrid=True, gridcolor="rgba(137,135,129,0.25)", title="Trade P&L ($)",
-                   zeroline=True, zerolinecolor="rgba(137,135,129,0.5)"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(170,178,191,0.15)", title="Trade P&L ($)",
+                   zeroline=True, zerolinecolor="rgba(170,178,191,0.35)"),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
-        font=dict(color="#898781"),
+        font=dict(color="#8b92a0"),
     )
     return fig
 
@@ -985,13 +986,13 @@ def reliability_figure(report) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=[0, 1], y=[0, 1], mode="lines",
-        line=dict(color="#c3c2b7", width=1.5, dash="dash"),
+        line=dict(color="#3a4350", width=1.5, dash="dash"),
         hoverinfo="skip", name="Perfect calibration",
     ))
     fig.add_trace(go.Scatter(
         x=xs, y=ys, mode="lines+markers",
-        line=dict(color="#2a78d6", width=2),
-        marker=dict(size=sizes, color="#2a78d6", line=dict(color="#fcfcfb", width=2)),
+        line=dict(color="#2fa6ff", width=2),
+        marker=dict(size=sizes, color="#2fa6ff", line=dict(color="#141920", width=2)),
         customdata=[b.n for b in report.bins],
         hovertemplate="Predicted: %{x:.0%}<br>Observed hit rate: %{y:.0%}<br>n=%{customdata}<extra></extra>",
         name=report.segment,
@@ -1000,14 +1001,14 @@ def reliability_figure(report) -> go.Figure:
         margin=dict(l=10, r=10, t=10, b=10),
         height=300,
         xaxis=dict(title="Mean predicted confidence", range=[0, 1], tickformat=".0%",
-                   showgrid=True, gridcolor="rgba(137,135,129,0.25)"),
+                   showgrid=True, gridcolor="rgba(170,178,191,0.15)"),
         yaxis=dict(title="Observed hit rate", range=[0, 1], tickformat=".0%",
-                   showgrid=True, gridcolor="rgba(137,135,129,0.25)"),
+                   showgrid=True, gridcolor="rgba(170,178,191,0.15)"),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#898781"),
+        font=dict(color="#8b92a0"),
         legend=dict(orientation="h", y=1.15, x=0),
-        hoverlabel=dict(bgcolor="#1a1a19", font_color="#ffffff"),
+        hoverlabel=dict(bgcolor="#242b36", font_color="#ffffff"),
     )
     return fig
 
@@ -1030,17 +1031,17 @@ def component_votes_figure(vote_rows: list[dict]) -> go.Figure:
         hovertemplate="%{y}<br>Score: %{x:+.2f}<br>Confidence: %{customdata[1]:.0%}<br>"
                        "Effective weight (base × regime): %{customdata[0]:.2f}<extra></extra>",
     ))
-    fig.add_vline(x=0, line=dict(color="#c3c2b7", width=1))
+    fig.add_vline(x=0, line=dict(color="#3a4350", width=1))
     fig.update_layout(
         margin=dict(l=10, r=40, t=10, b=10),
         height=max(120, 40 * len(labels)),
-        xaxis=dict(range=[-1, 1], showgrid=True, gridcolor="rgba(137,135,129,0.25)", title=None),
+        xaxis=dict(range=[-1, 1], showgrid=True, gridcolor="rgba(170,178,191,0.15)", title=None),
         yaxis=dict(showgrid=False),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
-        font=dict(color="#898781"),
-        hoverlabel=dict(bgcolor="#1a1a19", font_color="#ffffff"),
+        font=dict(color="#8b92a0"),
+        hoverlabel=dict(bgcolor="#242b36", font_color="#ffffff"),
     )
     return fig
 
@@ -1058,7 +1059,7 @@ def currency_strength_heatmap(ranked: list) -> go.Figure:
         colorscale=[[0.0, CHART_COLORS["diverging_neg"]], [0.5, CHART_COLORS["diverging_mid"]], [1.0, CHART_COLORS["diverging_pos"]]],
         zmid=0, zmin=-1, zmax=1,
         text=[[f"{v:+.2f}" for v in row] for row in z], texttemplate="%{text}",
-        textfont=dict(size=11, color="#0b0b0b"),
+        textfont=dict(size=11, color="#f2f4f7"),
         colorbar=dict(title="Score", tickvals=[-1, 0, 1], ticktext=["-1", "0", "+1"], outlinewidth=0, len=0.8),
         hovertemplate="%{y} · %{x}<br>Score: %{z:+.2f}<extra></extra>",
         xgap=2, ygap=2,
@@ -1070,8 +1071,8 @@ def currency_strength_heatmap(ranked: list) -> go.Figure:
         yaxis=dict(showgrid=False, autorange="reversed"),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#898781"),
-        hoverlabel=dict(bgcolor="#1a1a19", font_color="#ffffff"),
+        font=dict(color="#8b92a0"),
+        hoverlabel=dict(bgcolor="#242b36", font_color="#ffffff"),
     )
     return fig
 
@@ -1093,7 +1094,7 @@ def loss_meter_figure(pl_pct: float, limit_pct: float, label: str) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=[1.15], y=[label], orientation="h",
-        marker=dict(color="rgba(42,120,214,0.12)"), width=0.5,
+        marker=dict(color="rgba(255,255,255,0.08)"), width=0.5,
         hoverinfo="skip", showlegend=False,
     ))
     fig.add_trace(go.Bar(
@@ -1102,9 +1103,9 @@ def loss_meter_figure(pl_pct: float, limit_pct: float, label: str) -> go.Figure:
         hovertemplate=f"{label}<br>P/L: {pl_pct:+.2%} of NAV<br>Limit: {-limit_pct:.1%}<extra></extra>",
         showlegend=False,
     ))
-    fig.add_vline(x=1.0, line=dict(color="#0b0b0b", width=1.5),
+    fig.add_vline(x=1.0, line=dict(color="#f2f4f7", width=1.5),
                   annotation_text="limit", annotation_position="top",
-                  annotation_font=dict(size=10, color="#898781"))
+                  annotation_font=dict(size=10, color="#8b92a0"))
     fig.update_layout(
         barmode="overlay",
         margin=dict(l=10, r=10, t=24, b=10),
@@ -1114,7 +1115,7 @@ def loss_meter_figure(pl_pct: float, limit_pct: float, label: str) -> go.Figure:
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
-        hoverlabel=dict(bgcolor="#1a1a19", font_color="#ffffff"),
+        hoverlabel=dict(bgcolor="#242b36", font_color="#ffffff"),
     )
     return fig
 
@@ -1145,13 +1146,13 @@ def candlestick_figure(candles: list[dict], *, entry: float | None = None,
         margin=dict(l=10, r=60, t=10, b=30),
         height=height,
         xaxis=dict(showgrid=False, rangeslider=dict(visible=False), type="date"),
-        yaxis=dict(showgrid=True, gridcolor="rgba(137,135,129,0.25)", title="Price"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(170,178,191,0.15)", title="Price"),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#898781"),
+        font=dict(color="#8b92a0"),
         showlegend=False,
         hovermode="x unified",
-        hoverlabel=dict(bgcolor="#1a1a19", font_color="#ffffff"),
+        hoverlabel=dict(bgcolor="#242b36", font_color="#ffffff"),
     )
     return fig
 
@@ -1162,7 +1163,7 @@ _logo_img_html = f'<img src="data:image/png;base64,{_brand_logo}" height="44" st
 st.markdown(
     f'<div style="display:flex; align-items:center; gap:14px; margin-bottom:4px;">'
     f'{_logo_img_html}'
-    f'<div><div class="af-header-title">AI Forex Signal Desk</div>'
+    f'<div><div class="af-header-title">Tashi<span style="color:var(--af-accent);">Q</span></div>'
     f'<div class="af-header-tagline">Live decisions, real outcomes, full audit trail — '
     f'nothing trades without a gate it earned.</div></div></div>',
     unsafe_allow_html=True,
@@ -1268,7 +1269,7 @@ def render_sidebar_ticker(instruments: tuple[str, ...]) -> None:
         except Exception:  # noqa: BLE001
             closes = []
         delta_pct = (closes[-1] - closes[0]) / closes[0] if len(closes) >= 2 and closes[0] else 0.0
-        delta_color = "#0ca30c" if delta_pct >= 0 else "#d03b3b"
+        delta_color = "#3ddc84" if delta_pct >= 0 else "#ff6b6b"
         spark = _sparkline_svg(closes, width=40, height=14, accent=delta_color) if closes else ""
         rows_html.append(
             '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;">'
@@ -1294,11 +1295,14 @@ _watch_instruments = _all_instruments[:5]
 if _brand_logo:
     st.sidebar.markdown(
         f'<div style="text-align:center; margin-bottom:6px;">'
-        f'<img src="data:image/png;base64,{_brand_logo}" width="120" /></div>',
+        f'<img src="data:image/png;base64,{_brand_logo}" width="72" /><br/>'
+        f'<span style="font-family:\'Inter\',sans-serif; font-weight:800; '
+        f'font-size:1.1rem; letter-spacing:0.02em; color:var(--af-ink);">Tashi'
+        f'<span style="color:var(--af-accent);">Q</span></span></div>',
         unsafe_allow_html=True,
     )
 else:
-    st.sidebar.title("📡 Signal Desk")
+    st.sidebar.title("📡 TashiQ")
 st.sidebar.caption("Nothing is sent to a broker without a gate it earned.")
 
 st.sidebar.markdown(f"**{CURRENT_USER['username']}** {role_badge_html(CURRENT_IS_ADMIN)}", unsafe_allow_html=True)
