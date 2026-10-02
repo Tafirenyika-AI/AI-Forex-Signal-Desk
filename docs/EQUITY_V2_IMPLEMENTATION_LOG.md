@@ -202,3 +202,34 @@ Per-phase entries record: files changed, schema changes, tests added, tests pass
 - The keyword classifier is coarse by design — matches against headline+summary combined, so a passing mention (e.g. "...citing valuation, earnings outlook...") can tag an article EARNINGS even when the real subject is an analyst rating. Acceptable for this phase's scope; an ML classifier would be a deliberate, separate upgrade, not an oversight.
 
 **Next**: Phase 7 (equity relationship/knowledge graph) — ticker→company→industry→sector→sector ETF→index→peers, the natural filler for `equity_entities`' still-`None` sector/industry/exchange columns (Phase 4's own disclosed gap).
+
+---
+
+## Phase 7 — Equity Relationship/Knowledge Graph — **DONE**
+
+2026-10-02. Built `src/equity/relationships.py` (`SecRelationshipClient`, `sic_to_sector`, `peers_for`) — fills in `equity_entities`' still-empty sector/industry/exchange/sector_etf columns (Phase 4's own disclosed gap) using SEC's own submissions endpoint (`data.sec.gov/submissions/CIK##########.json`), the same official-source-only standard as Phase 4, reusing the CIK Phase 4 already wrote — no new API or key needed. Verified live against real NVDA data before writing the parser: the real response includes `sic`, `sicDescription`, and `exchanges`.
+
+**Honesty disclosure, load-bearing**: SEC's SIC (Standard Industrial Classification) code is a real US-government classification, but it is *not* GICS — the sector taxonomy ("the 11 S&P sectors") Wall Street actually uses. `SIC_TO_SECTOR` is a disclosed, maintainable approximation mapping SIC ranges to the closest of the 11 real SPDR Select Sector ETFs, not an authoritative GICS feed (which would require a paid license this project doesn't have). Index membership (e.g. "SPX") is deliberately left unpopulated — no free, reliable, point-in-time-correct constituent source was found that doesn't require scraping a page with no stability guarantee, and hardcoding today's constituents would look authoritative while quietly going stale.
+
+**Peers, per the brief's own explicit ask ("a maintainable mapping, not a hardcoded handful of famous stocks")**: `peers_for()` dynamically queries this project's own `equity_entities` table for other tickers sharing the same real SIC code — grows automatically as more tickers get synced, never a static list.
+
+**Real bug caught by its own test, not live**: the first version of `SIC_TO_SECTOR` listed the general chemicals range (2800-2900, Materials) *before* the narrower pharmaceuticals range (2830-2840, Health Care) that nests inside it — since the function returns on the first matching range, every pharma ticker would have been misclassified as Materials. Caught by a test asserting SIC 2834 (pharmaceutical preparations) maps to Health Care; fixed by reordering so narrow ranges that nest inside a broader one are always checked first (the same principle the module's own docstring already stated but didn't fully follow in its first draft).
+
+**Files changed**: `src/data/db.py` (+1 nullable column, `equity_entities.sic_code`, for precise peer-matching — more precise than the free-text `industry` string), `src/equity/relationships.py` (new, ~150 lines), `src/scripts/sync_equity_relationships.py` (new, scheduled entrypoint), `run_sync_equity_relationships.bat` (new), `tests/test_equity_relationships.py` (new, 15 tests).
+
+**Schema change applied directly to production**: `equity_entities` already held 3 real rows (from Phase 4) by this point, so — unlike Phase 3's empty-table case — this was a genuinely additive `ALTER TABLE ADD COLUMN` on a non-empty table, which is always safe for a nullable column (no backfill required, no existing row violates "no value yet"). Applied and confirmed via `information_schema.columns`.
+
+**Live-verified against real production data**: ran the sync for real against AAPL/MSFT/NVDA — all three correctly resolved to Technology/XLK, each with its own real distinct SIC code (AAPL 3571 Electronic Computers, MSFT 7372 Prepackaged Software, NVDA 3674 Semiconductors) and real exchange (Nasdaq). Confirmed `peers_for()` correctly returns empty for all three (no two of them share an exact SIC code yet, as expected with only 3 tickers in the table so far) rather than fabricating a peer relationship.
+
+**Tests**: `tests/test_equity_relationships.py`, 15 tests — `sic_to_sector` (the real NVDA code, None/empty/non-numeric input, unmapped code, the pharma-vs-chemicals ordering fix, energy, financials), `SecRelationshipClient` via `httpx.MockTransport` (real captured NVDA shape, no-exchanges-listed edge case, required-contact-email guard), and `peers_for` against an isolated in-memory engine (shared-SIC match, no-SIC-yet, ticker-not-found, excludes-self). Full suite: **223/223 passing** (208 prior + 15 new).
+
+**Execution-impact assessment**: zero — every network call is a GET against SEC's public API; the only DB write is an UPDATE of `equity_entities`' own enrichment columns, no broker import anywhere.
+
+**Scheduled, same day**: `run_sync_equity_relationships.bat` + a new `AIForex_SyncEquityRelationships` Windows Scheduled Task, once daily (slow-changing data, same cadence philosophy as Phase 4) — registered with the proven `-AllowStartIfOnBatteries -StartWhenAvailable -WakeToRun` settings, confirmed in the task's own XML, manually triggered, confirmed via real log content.
+
+**Known limitations, disclosed not hidden**:
+- `index_membership` stays unpopulated by design (see the honesty disclosure above) — a future phase could add it if a licensed or sufficiently stable free source is found.
+- `SIC_TO_SECTOR`'s coverage, while broad, is not exhaustive — SIC codes outside every listed range (e.g. public administration, agriculture of certain types) resolve to `(None, None)` rather than a guessed sector; disclosed as intentional, not a bug to "complete" blindly.
+- Peer-matching is exact-SIC-code only (4-digit) — two genuinely related companies with adjacent-but-different SIC codes (common, since SIC is a coarser, older scheme than real industry practice) won't show up as each other's peers yet; a looser (e.g. 3-digit-prefix) matching mode is a reasonable future refinement, not implemented here to avoid false-peer noise without real evidence of its value.
+
+**Next**: Phase 8 (cross-market features — SPY/QQQ/sector ETF/yields/relative volume/VWAP distance) — the first real consumer of `equity_entities.sector_etf`.

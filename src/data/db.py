@@ -826,6 +826,7 @@ equity_entities = Table(
     Column("ticker", String, nullable=False, index=True),
     Column("cik", String, nullable=True, index=True),  # SEC EDGAR's own identifier (Phase 4)
     Column("company_name", String, nullable=True),
+    Column("sic_code", String, nullable=True, index=True),  # SEC's own 4-digit Standard Industrial Classification code (Phase 7) -- more precise than the free-text `industry` string for grouping real peers
     Column("sector", String, nullable=True, index=True),
     Column("industry", String, nullable=True, index=True),
     Column("exchange", String, nullable=True),
