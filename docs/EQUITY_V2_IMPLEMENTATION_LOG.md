@@ -476,3 +476,28 @@ Then trained real challenger models end-to-end on real NVDA data (simple 80/20 c
 - The button-gate UX (click to load) is a new pattern for this dashboard — every other tab loads its content immediately. A reasonable, disclosed tradeoff specifically for this tab's heavier real-API cost, not applied retroactively to any other tab.
 
 **Next**: Phase 17 (observability — full per-decision reproducibility) or Phase 18 (champion/challenger promotion process) — continuing per "go on until you finish."
+
+---
+
+## Phase 17 — Observability — **DONE**
+
+2026-10-02. Built `src/evaluation/decision_trace.py` (`build_decision_trace`, `explain_decision`) — answers the brief's own literal test ("why did the system buy NVDA at 10:32:17") by joining every table a single decision actually touches: `trade_intents` (the decision itself) → `predictions` (each component's own p_up/confidence for that instrument/horizon/time) → `risk_decisions` (a direct `trade_intent_id` foreign key) → `orders_fills` (joined via the real `client_order_id = f"intent-{trade_intent_id}"` convention `run_loop.py`/`authorization/service.py` both already use) → `trade_outcomes` (the eventual realized result). Adds no new data collection — purely a query/reporting layer over what every earlier phase (and the pre-existing forex pipeline) already persists.
+
+**Honest, disclosed limitation**: `model_registry` only tracks the META-MODEL's version history — the PRICE model is retrained fresh every cycle per (instrument, horizon) and never persisted with a version identifier at all (confirmed by reading `run_loop.py`/`price_model.py`). The trace reports the meta-model's currently-deployed version as the closest available proxy, honestly labeled as such, never fabricating a precision the underlying data doesn't have.
+
+**A real bug caught by live verification against a real historic trade, not by any test**: traced a real trade_intent (`id=71214`) — the project's own well-known genuine +$8,902.49 NVDA win (previously found invisible to the outcome tracker, fixed earlier this session). The trace correctly joined `trade_outcomes` (proving a real fill happened: real entry/exit prices, a real `broker_trade_id`) but `orders_fills` came back `None` — this specific real trade's `client_order_id` was a raw UUID (`1e983c0a-...`), predating the `f"intent-{id}"` convention this join relies on. The FIRST version of `explain_decision()`'s narrative logic incorrectly concluded "risk-approved, but never actually sent to the broker" — flatly contradicted by the very next sentence reporting a real WIN outcome. Fixed: the narrative now checks for a recorded outcome BEFORE ever claiming "never sent," reporting instead that the `order_fill` row simply couldn't be joined (an older convention), while still accurately stating a fill clearly did happen. A dedicated regression test reproduces this exact real pattern.
+
+**Files changed**: `src/evaluation/decision_trace.py` (new, ~150 lines), `tests/test_decision_trace.py` (new, 6 tests).
+
+**Live-verified against two real production decisions**: a real `NO_TRADE` decision (ETH/USD, confidence 0.013) traced completely and correctly end-to-end, including the real component prediction (`price` p_up=0.5577) and the real risk-rejection reason; and the real historic NVDA win above, which is where the narrative bug was caught and fixed.
+
+**Tests**: `tests/test_decision_trace.py`, 6 tests — unknown trade_intent_id, a full trace joining every table, missing risk_decision/order_fill reported honestly, a risk-rejected trace never claiming an order was sent, the real outcome-without-joinable-order-fill regression case above, and the honestly-`None` meta-model-version case. Full suite: **312/312 passing** (306 prior + 6 new).
+
+**Execution-impact assessment**: zero — every function is a read-only query over already-stored data; no write, no broker call, no order-adjacent code anywhere.
+
+**Known limitations, disclosed not hidden**:
+- No historical point-in-time model-version tracking exists for either model (price or meta) — the reported meta-model version is "currently deployed," not necessarily "deployed at the historical decision's own moment."
+- The `orders_fills` join only works for trades using the `f"intent-{trade_intent_id}"` client_order_id convention — older trades (like the real NVDA win found here) predate it and will always show `order_fill=None` even when a real fill happened; `explain_decision()` now handles this honestly rather than mis-stating it, but the underlying join gap itself isn't backfillable (the old convention is simply gone).
+- Not yet wired into the dashboard — a natural follow-up for Phase 16's own Equity Intelligence tab (e.g., a "trace this decision" lookup), not implemented in this pass to keep this phase's own scope bounded to the reporting layer itself.
+
+**Next**: Phase 18 (champion/challenger promotion process — formalizing how Phase 10's shadow challengers could ever be promoted, gated on Phase 11's walk-forward evidence, never automatic).
