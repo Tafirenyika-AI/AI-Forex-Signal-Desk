@@ -118,6 +118,7 @@ from src.models.train_meta_model import (
 )
 from src.models.track_record import all_track_records
 from src.models.trading_sessions import current_session_state
+from src.reconciliation.alpaca import STARTING_DEPOSIT
 from src.risk import governor as risk_governor
 from src.run_loop import run_once
 
@@ -1175,15 +1176,14 @@ st.write("")
 # "am I up or down overall" — "NAV"/"unrealized P/L" had already confused
 # the same question twice (see chat history). Deliberately the FIRST
 # substantive thing on every page, before the more technical stat row below.
-# Starting balances are this project's own documented conventions, not
-# guessed: $10,000 for OANDA (src/evaluation/promotion_gates.py's own
-# "this project's paper/demo starting balance convention" — matches the
-# real first-ever tracked balance, ~$10,009, from 2026-08-13) and $100,000
-# for Alpaca (its standard paper-account default — matches the real first
-# tracked balance, ~$99,999.20, from 2026-08-24). Read-only: fetches the
-# same 15s-cached account state other tabs already use, no new broker
-# calls, and touches nothing about open positions or order execution.
-_AS_STARTING_BALANCE = {"alpaca": 100_000.0}
+# Starting balance: Alpaca's standard paper-account default, matches the
+# real first tracked balance (~$99,999.20, from 2026-08-24). Equity V2
+# Phase 1 (src/reconciliation/alpaca.py) consolidated this constant to
+# one place — this used to be its own separate copy here, a real
+# duplication-drift risk now closed. Read-only: fetches the same 15s-
+# cached account state other tabs already use, no new broker calls, and
+# touches nothing about open positions or order execution.
+_AS_STARTING_BALANCE = STARTING_DEPOSIT
 _as_rows = []
 if _alpaca_configured():
     try:

@@ -777,6 +777,34 @@ promotion_gate_snapshots = Table(
 )
 
 
+# --- reconciliation_issues: Equity V2 Phase 1 (src/reconciliation/alpaca.py)
+# — persisted ReconciliationIssue records from each read-only broker-vs-
+# internal comparison run. This module NEVER auto-resolves a discrepancy
+# by placing/cancelling an order (see that module's own docstring) — these
+# rows are for a human (or a later phase) to review. resolved_at is set
+# only by an explicit human action elsewhere, never by the reconciliation
+# run itself re-checking and finding the issue gone (a since-fixed
+# position could just as easily mean the position closed normally, not
+# that anyone resolved anything).
+reconciliation_issues = Table(
+    "reconciliation_issues",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, nullable=True, index=True),
+    Column("broker", String, nullable=False, index=True),
+    Column("severity", String, nullable=False, index=True),  # VERIFIED / WARNING / UNRESOLVED / CRITICAL
+    Column("symbol", String, nullable=False, index=True),  # instrument, or "ACCOUNT" for account-level checks
+    Column("issue_type", String, nullable=False),
+    Column("broker_value", Text, nullable=False),
+    Column("internal_value", Text, nullable=False),
+    Column("detected_at", DateTime(timezone=True), nullable=False, index=True),
+    Column("description", Text, nullable=False),
+    Column("suggested_investigation", Text, nullable=False),
+    Column("resolved_at", DateTime(timezone=True), nullable=True),
+    Column("resolved_note", Text, nullable=True),
+)
+
+
 @functools.lru_cache(maxsize=None)
 def get_engine(db_path):
     """Every DB access in this project goes through this one function (21
