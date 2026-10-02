@@ -72,9 +72,22 @@ def usable_rows(df: pd.DataFrame, component: str) -> pd.DataFrame:
     """Rows where this component's own feature columns AND target_up are
     all non-null -- mirrors src/features/engine.py's feature_ready_frame
     pattern (a model must never be fit or scored on a row with a missing
-    input, rather than silently imputing)."""
+    input, rather than silently imputing).
+
+    Deliberately preserves the ORIGINAL index (no reset_index) -- a real
+    bug surfaced by src/backtest/equity_walk_forward.py's own
+    end-to-end test: that module cross-references a filtered subset's
+    rows back into the full, gap-free training frame by index (to look
+    up each row's correct future-horizon close price without being
+    thrown off by whichever rows this dropna happened to remove). A reset
+    index would silently break that lookup, with no error until a
+    downstream .loc[] call raised a confusing KeyError far from the real
+    cause. The original, caller-visible index position is more broadly
+    useful than a reset one, and every pandas dropna consumer should be
+    able to .loc[] back into its source frame — resetting took that away
+    for no benefit."""
     columns = COMPONENT_COLUMNS[component]
-    return df.dropna(subset=[*columns, "target_up"]).reset_index(drop=True)
+    return df.dropna(subset=[*columns, "target_up"])
 
 
 def fit(component: str, df: pd.DataFrame) -> Pipeline:
