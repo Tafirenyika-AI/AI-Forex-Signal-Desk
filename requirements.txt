@@ -11,3 +11,4 @@ pypdf>=5.0
 bcrypt>=4.1
 cryptography>=42.0
 extra-streamlit-components>=0.1.60
+websockets>=13.0
