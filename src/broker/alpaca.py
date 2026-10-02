@@ -585,6 +585,19 @@ class AlpacaBroker(BrokerAdapter):
                 p["symbol"] = _denormalize_crypto_symbol(p["symbol"])
         return data
 
+    async def portfolio_history(self, period: str = "1M", timeframe: str = "1D") -> dict[str, Any]:
+        """Equity V2 Phase 15 — the real, broker-verified account equity
+        curve (parallel arrays: unix-second `timestamp`, `equity`,
+        `profit_loss`, `profit_loss_pct`), never reconstructed from this
+        project's own trade records. Verified live 2026-10-02 against the
+        real account; shape confirmed exactly as Alpaca's own docs
+        describe. `period` is Alpaca's own shorthand (e.g. "1M", "3M",
+        "1A"); `timeframe` controls bar spacing (e.g. "1D", "1H")."""
+        return await self._request(
+            self._trading_client, "GET", "/account/portfolio/history",
+            params={"period": period, "timeframe": timeframe},
+        )
+
     async def transactions(self, since_id: str | None = None) -> list[dict[str, Any]]:
         """Alpaca has no OANDA-style transaction ledger — closed/filled
         orders are the closest equivalent. Bracket legs come back as

@@ -430,3 +430,26 @@ Then trained real challenger models end-to-end on real NVDA data (simple 80/20 c
 - The `EQUITY_V2_ACTIVATED_AT` grandfathering boundary (flagged as missing since Phase 0's own audit) is still not built — this fix protects against pyramiding going forward for ANY position, legacy or new, which is a strictly stronger guarantee than grandfathering alone would have provided, but the boundary itself remains a disclosed, carried-forward gap.
 
 **Next**: Phase 15 (performance forensics) — separating broker-verified account return from model-attributable return from current unrealized P&L, extending Phase 1's reconciliation work.
+
+---
+
+## Phase 15 — Performance Forensics — **DONE**
+
+2026-10-02. Built `src/evaluation/equity_performance.py` (`build_performance_report`) plus a new `AlpacaBroker.portfolio_history()` method (verified live before writing any parsing logic — real shape confirmed: parallel `timestamp`/`equity`/`profit_loss`/`profit_loss_pct` arrays). Cleanly separates the brief's own named figures, never combined ambiguously: **BROKER ACCOUNT RETURN** (ground truth, straight from Alpaca's own portfolio-history endpoint, never reconstructed from this project's own trade records), **MODEL-ATTRIBUTABLE RETURN** (sum of `trade_outcomes.realized_pl_usd` WITH a resolved `trade_intent_id` — a trade this project's own signal genuinely caused), a separately-reported **UNEXPLAINED REALIZED P&L** bucket (rows with no resolved `trade_intent_id` — the same category Phase 1's reconciliation already flags as `unexplained_broker_order`, now quantified in dollars, not just counted), **CURRENT UNREALIZED P&L** (explicitly marked "not yet real"), and SPY/QQQ benchmark comparison using the same simple return convention Phase 12's portfolio backtester already established.
+
+**A deliberate naming fix caught during design, not by a test**: the benchmark-comparison fields were initially named `model_return_vs_spy_pct`/`model_return_vs_qqq_pct`, but what they actually compare is the BROKER account return (the only figure with a clean, broker-verified %-of-starting-equity basis) against the benchmark — not the model-attributable dollar P&L alone, which has no consistent capital base to express as a percentage (individual trade sizes vary). Renamed to `account_return_vs_spy_pct`/`account_return_vs_qqq_pct` before this ever shipped — conflating the two under a "model" label would have been exactly the ambiguous combination this phase's own instruction forbids.
+
+**Live-verified against the real production account, over the real last 30 days — a genuinely useful, non-trivial real result**: broker account return **+$5,460.79 (+5.50%)**; model-attributable realized P&L **+$8,437.49 across 4 real trades**; a real, separately-flagged **unexplained realized P&L of -$3,432.04 across 3 real trades** — not hidden or blended into the model's figure, and a direct, useful cross-validation of Phase 1's own earlier "13 unexplained broker order" finding (now quantified in real dollars, not just counted); current unrealized P&L **-$1,798.42** (consistent with the real open AAPL/MSFT positions' own unrealized figures seen directly during Phase 14's investigation); SPY +0.80%, QQQ +5.81% over the same window; account outperformed SPY by +4.70 points, underperformed QQQ by -0.32 points.
+
+**Files changed**: `src/broker/alpaca.py` (+`portfolio_history()`), `src/evaluation/equity_performance.py` (new, ~165 lines), `tests/test_equity_performance.py` (new, 12 tests).
+
+**Tests**: `tests/test_equity_performance.py`, 12 tests — `parse_broker_account_return` (real captured shape, window-not-covered, empty-response), `compute_model_attributable_return` (the model-vs-unexplained split, window exclusion, cross-broker exclusion), `compute_current_unrealized_pl`, `compute_benchmark_return_pct` (happy path, window-not-covered, empty-frame), and a full `build_performance_report` integration test asserting the four headline figures are each independently correct AND do not silently sum to one blended number. Full suite: **306/306 passing** (294 prior + 12 new).
+
+**Execution-impact assessment**: zero — `portfolio_history()` is a GET against Alpaca's own read-only reporting endpoint; every other function is pure computation/query over already-stored data.
+
+**Known limitations, disclosed not hidden**:
+- The real -$3,432 unexplained-P&L finding is reported, not investigated to a root cause in this pass — that's a natural follow-up (likely the same already-known sources Phase 1 found: ad-hoc verification scripts' own test trades, or a genuinely unexplained one), not something this reporting phase itself resolves.
+- `portfolio_history()`'s `period`/`timeframe` parameters default to a reasonable `"1M"`/`"1D"`, but no caller (dashboard, scheduled report) wires this into a recurring view yet — that's Phase 16's (dashboard) natural next step.
+- Benchmark comparison inherits Phase 12's own disclosed limitation: a window reaching earlier than SPY/QQQ's backfilled history honestly yields `None` rather than a partial estimate.
+
+**Next**: Phase 16 (dashboard — new Equity Intelligence section surfacing this phase's performance report, Phase 1's `reconciliation_issues`, and per-ticker opportunities with model probability/fundamental/news/risk state).
