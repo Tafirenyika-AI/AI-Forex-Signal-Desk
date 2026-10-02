@@ -146,3 +146,32 @@ Per-phase entries record: files changed, schema changes, tests added, tests pass
 - Only run against the 3 real equity tickers currently configured by this account's active users — not yet exercised against a ticker with a materially different filing shape (e.g. a bank, REIT, or insurer with a non-standard statement structure) to see how gracefully `KEY_METRICS`' assumptions degrade.
 
 **Next**: Phase 5 (fundamental feature engine, `src/features/equity_fundamentals.py`) — the first real consumer of the `company_fundamentals` rows this phase now writes.
+
+---
+
+## Phase 5 — Fundamental Feature Engine — **DONE**
+
+2026-10-02. Built `src/features/equity_fundamentals.py` — `compute_fundamental_features()`, a pure point-in-time function (same "causal, no future information" discipline as `src/features/engine.py`) turning Phase 4's raw `company_fundamentals` rows into growth/margin/cash-flow ratios: revenue, YoY revenue growth, gross/operating/net margin, operating-cash-flow margin, leverage ratio (Liabilities/Assets), diluted EPS.
+
+**Point-in-time correctness**: every lookup filters to `filed_at <= as_of` internally (never trusted to the caller) — a feature computed "as of" a historical date can never see a filing that hadn't happened yet, which Phase 11's walk-forward validation depends on.
+
+**Never fabricate missing data (the brief's own Phase 5 rule)**: every ratio is `None`, never a fabricated 0 or an imputed value, when an input is unavailable as-of the requested date; `FundamentalFeatures.missing_metrics` names exactly which inputs were absent so a downstream caller can make an informed choice.
+
+**Two real bugs found and fixed, both via the test-first/live-verify discipline, before this was trusted**:
+1. **Restatement tie-break bug (caught by a synthetic test)**: when two facts tied on both `period_end` and duration (the same quarter restated with a later `filed_at`), the original tie-break fell through to whichever happened to sort first, ignoring which one was actually the more recently filed, correct value. Fixed to always prefer the latest `filed_at` among ties.
+2. **Fiscal-Q4 annual-figure leak (caught live against real MSFT production data, not by any synthetic test)**: a company's fiscal Q4 very often has NO standalone XBRL fact at all — a 10-K's income statement reports the full fiscal year, not a discrete fourth quarter — so the only fact at that period_end is a ~365-day annual cumulative one. The original function used duration only as a *tie-break* among facts sharing the latest `period_end`, so when that period_end had just one (annual) fact, it was accepted outright as "this quarter's revenue." Live run surfaced $331.8B as MSFT's "quarterly" revenue — its entire fiscal year's total, roughly 4x the real number. Fixed by filtering to quarter-length duration (`<=100` days) *before* selecting the latest `period_end`, so a Q4-only annual disclosure is correctly skipped and the function falls back to the most recent genuinely quarterly fact (Q3) instead — deriving a true Q4 figure via FY-minus-9-months subtraction is a disclosed gap for a later pass, not faked here.
+
+**Files changed**: `src/features/equity_fundamentals.py` (new, ~165 lines), `tests/test_equity_fundamentals.py` (new, 10 tests).
+
+**Live-verified against real production data, not just synthetic tests**: ran `compute_fundamental_features()` against the real NVDA/AAPL/MSFT rows Phase 4 already wrote. Before the Q4 fix, MSFT's figures were visibly wrong (revenue 4x too high, due to the bug above) while NVDA/AAPL happened to look plausible by coincidence (their most recent period_end genuinely had a quarterly fact available) — a reminder that "looks plausible for 2 of 3 real tickers" is not the same as "correct," and the third ticker's anomaly was the one that mattered. After the fix, all three show realistic, internally-consistent growth/margin/leverage/EPS figures (e.g. MSFT: $82.9B quarterly revenue, 18.3% YoY growth, 67.6% gross margin, 38.3% net margin — all in line with real-world expectations).
+
+**Tests**: `tests/test_equity_fundamentals.py`, 10 tests — no-data-means-everything-missing, the real quarterly-vs-YTD same-`period_end` disambiguation, YoY growth (both the happy path and the honest-None-when-no-comparable-quarter-exists path), point-in-time filtering (a filing dated after `as_of` must be invisible), the restatement tie-break fix, margin-missing-when-numerator-absent, leverage ratio from instant metrics, the fiscal-Q4-annual-only-fact fix (locks in the real MSFT bug), and the dual-revenue-tag fallback. Full suite: **194/194 passing** (184 prior + 10 new).
+
+**Execution-impact assessment**: zero — pure computation over already-stored rows, no DB write, no network call, no broker import anywhere in this module.
+
+**Known limitations, disclosed not hidden**:
+- No derived Q4 figure (FY minus 9-month YTD) — a company's fiscal Q4 is reported as "missing" rather than computed, consistent with "never fabricate," but means roughly 1-in-4 quarters per company currently has no standalone revenue/margin figure from this function. A credible candidate for a later pass once Phase 9's feature engine defines how it wants to handle derived (vs. directly-filed) values.
+- `KEY_METRICS` (from Phase 4) is a small, fixed tag list — companies with materially different statement shapes (banks, REITs, insurers) were not tested and may report under entirely different XBRL tags this function doesn't look for yet.
+- No caching/memoization — `compute_fundamental_features` re-scans the full row list on every call; fine at today's per-ticker row counts (~2,000), but a future caller computing features for many (ticker, as_of) pairs in a backtest loop may want a precomputed index.
+
+**Next**: Phase 6 (equity news intelligence) or Phase 7 (relationship graph) — both are natural next consumers; awaiting no further input per "go on until you finish," picking whichever best unblocks Phase 9's feature engine.
