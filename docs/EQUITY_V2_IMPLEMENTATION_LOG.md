@@ -524,3 +524,29 @@ Then trained real challenger models end-to-end on real NVDA data (simple 80/20 c
 - This report only evaluates ONE ticker's walk-forward result at a time (whatever the caller fed it) — a real promotion decision would reasonably want this run across several tickers before trusting a single one's regime breakdown; not aggregated across tickers in this pass, left to whoever runs this report to do by hand.
 
 **Next**: Phase 19 (comprehensive testing across every new module plus existing-position protection, broker reconciliation, order idempotency) or Phase 20 (deployment-mode confirmation) — continuing per "go on until you finish."
+
+---
+
+## Phase 19 — Comprehensive Testing Audit — **DONE**
+
+2026-10-02. This phase was largely already satisfied by the test-first discipline every prior phase already followed (320 tests existed before this phase even started) — Phase 19's own job was to AUDIT that coverage was genuinely comprehensive across every dimension the brief names, and fill any real gaps found, not to retroactively test everything from scratch.
+
+**Audit result: every new module from Phases 1–18 has real, dedicated test coverage.** A first automated pass flagged 4 modules as apparently untested (`src/equity/relationships.py`, `src/market_data/alpaca_stream.py`, `src/reconciliation/alpaca.py`, plus the empty `__init__.py` package markers) — investigated rather than trusted, and all 3 real modules turned out to have genuine coverage under a differently-prefixed test filename the naive audit script's naming assumption missed (`tests/test_equity_relationships.py` — 15 tests, `tests/test_alpaca_market_stream.py` — 13 tests, `tests/test_reconciliation_alpaca.py` — 18 tests). No real gap there.
+
+**Two real, disclosed gaps found and filled**: "order idempotency" and "restart recovery" are named explicitly in the brief's own Phase 19 wording but had no DIRECT test of their own — idempotency was previously only exercised indirectly, through `tests/test_authorization_service.py`'s higher-level concurrency test; restart recovery's real guarantee (Phase 14's `no_pyramid_same_symbol` gate) existed and was tested, but not under a test explicitly framed as "a restart must not duplicate a position." Added `tests/test_execution_idempotency_and_restart.py` (new, 4 tests): `src/execution/service.py`'s own `ON CONFLICT DO NOTHING` mechanism directly (executing the identical `client_order_id` twice persists exactly one `orders_fills` row, even though the broker call itself happens twice — the broker's own idempotency key is what prevents a real duplicate fill, this project's layer only guarantees the log never shows a phantom row), a broker-error case confirming fail-closed logging still records exactly one `ERROR:`-status row, and two tests framing Phase 14's existing gate explicitly as the restart-recovery mechanism it actually is (an already-open position blocks a same-direction re-entry after a simulated restart; a genuinely flat instrument is correctly unaffected by positions open elsewhere in the account).
+
+**"Dashboard calculations" coverage, considered and found already adequate**: Phase 16's own new dashboard code does no new inline calculation logic of its own — every real computation it performs (`build_performance_report`, `compute_benchmark_return_pct`) was deliberately pushed into Phase 15's already-tested, importable modules rather than written inline in `app.py`, consistent with this project's own established convention that dashboard-internal logic is verified only via the `AppTest` smoke test (nothing in this codebase imports directly from `app.py`, since it carries top-level Streamlit/auth side effects on import). This phase's own audit confirmed that convention was followed correctly rather than violated.
+
+**"Migrations" coverage**: already real and direct — Phase 3's `test_new_tables_create_alongside_existing_schema_without_conflict` test, plus every single schema-touching phase this session (Phases 3, 7) independently live-verifying `metadata.create_all()`'s additive-only behavior against the real production database before trusting it. Not duplicated further in this pass.
+
+**Files changed**: `tests/test_execution_idempotency_and_restart.py` (new, 4 tests).
+
+**Tests**: the 4 new tests above. Full suite: **324/324 passing** (320 prior + 4 new) — every existing test still passes, satisfying the brief's own "existing tests must keep passing throughout" instruction literally, not just in spirit.
+
+**Execution-impact assessment**: the new idempotency test DOES exercise `ExecutionService.execute()` against a fake broker (never a real one) — confirms real behavior without ever touching a live account.
+
+**Known limitations, disclosed not hidden**:
+- No dedicated test exists for a true process-level restart (killing and restarting the actual Python process mid-cycle) — the restart-recovery tests here, like Phase 14's own, test the GOVERNOR-LEVEL guarantee (a fresh `broker.positions()` read correctly blocks a same-direction re-entry), which is the real mechanism that makes a process-level restart safe, not a simulation of the OS-level restart itself.
+- `ExecutionService.execute()`'s own idempotency guarantees only the LOG never shows a duplicate — it does not itself prevent a genuine duplicate broker call (confirmed directly: the fake broker's `place_order` was called twice in the idempotency test). Real duplicate-fill protection lives at the broker's own `client_order_id` uniqueness guarantee, outside this project's control to test directly without a real broker account.
+
+**Next**: Phase 20 (deployment mode confirmation — RESEARCH + PAPER ONLY, confirm `src/config.py`'s live-trading refusal is untouched for both brokers) — the final phase.
