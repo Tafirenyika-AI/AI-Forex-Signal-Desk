@@ -175,3 +175,30 @@ Per-phase entries record: files changed, schema changes, tests added, tests pass
 - No caching/memoization — `compute_fundamental_features` re-scans the full row list on every call; fine at today's per-ticker row counts (~2,000), but a future caller computing features for many (ticker, as_of) pairs in a backtest loop may want a precomputed index.
 
 **Next**: Phase 6 (equity news intelligence) or Phase 7 (relationship graph) — both are natural next consumers; awaiting no further input per "go on until you finish," picking whichever best unblocks Phase 9's feature engine.
+
+---
+
+## Phase 6 — Equity News Intelligence — **DONE**
+
+2026-10-02. Built `src/news/equity_news.py` — ticker-aware news, kept entirely separate from the existing currency-keyed `news_events` path (`src/news/alpha_vantage.py`/`gdelt.py` untouched). Chose Alpaca's own News API (`data.alpaca.markets/v1beta1/news`) over Alpha Vantage for equities: verified live that it works with credentials this project already has (no second key to manage) and has a far more generous rate limit.
+
+**The brief's own Phase 6 correction, implemented as two distinct jobs**: (1) classify a coarse event type via a deliberately simple, disclosed keyword heuristic (`classify_event_type` — EARNINGS/GUIDANCE/M&A/SEC_FILING/DIVIDEND/SPLIT/LEGAL/ANALYST_RATING/PRODUCT, same vocabulary as `company_events.event_type`; `None`, not a forced catch-all, when nothing matches); (2) `compute_reaction()` measures what *actually happened* to price after a headline, using this project's own already-stored candles, never estimated at publish time and never treated as known before enough real time has passed (`_REACTION_MIN_AGE = 27h`, so both the 1h and 1d windows are guaranteed to have genuine data before a row is even considered).
+
+**Files changed**: `src/news/equity_news.py` (new, ~195 lines), `src/scripts/sync_equity_news.py` (new, scheduled entrypoint), `run_sync_equity_news.bat` (new), `tests/test_equity_news.py` (new, 14 tests).
+
+**Live-verified against real production data**: ran the sync script for real — fetched 50 real articles across AAPL/MSFT/NVDA/QQQ (QQQ, confirmed in Phase 4 to have no SEC CIK, still gets real news coverage as an ETF — a useful real-world confirmation that `equity_news` correctly doesn't depend on `equity_entities`/CIK at all). 8 of 50 real headlines/summaries classified correctly (EARNINGS, ANALYST_RATING, PRODUCT, LEGAL all genuinely matched); spot-checked two EARNINGS matches that looked surprising from the headline alone and confirmed both were legitimate — the real article *summary* text contained "earnings" even though the headline didn't, a defensible (if coarse) outcome of a headline+summary keyword match, not a bug.
+
+**Real bug caught by live verification, not a test**: the sync script's own "N newly inserted" log line reported 0 after a run that had genuinely just inserted all 50 real articles — the same psycopg bulk-`executemany` `rowcount` unreliability already documented elsewhere in this project (`src/outcomes/alpaca_tracker.py`'s `rowcount == -1` fix). Fixed by counting rows before/after the insert in the same transaction instead of trusting the driver's reported count — purely a log-accuracy fix (the insert itself was always correct), but a misleading operational log is still worth not shipping. Re-ran afterward and confirmed it then correctly reported 0 new (true idempotency) on a genuine no-new-articles re-run.
+
+**Tests**: `tests/test_equity_news.py`, 14 tests — `classify_event_type` (each category, no-match, and a keyword-priority-ordering case), `_article_to_row` against the real captured Alpaca News shape (including the no-ticker-tag skip case), `AlpacaNewsClient` via `httpx.MockTransport`, and `compute_reaction`/`pending_reaction_rows` against an isolated in-memory engine with synthetic candles (happy path, no-baseline-candle-returns-None, missing-1d-only, age-gating, already-computed exclusion). Full suite: **208/208 passing** (194 prior + 14 new).
+
+**Scheduled, same day**: `run_sync_equity_news.bat` + a new `AIForex_SyncEquityNews` Windows Scheduled Task, every 30 minutes (news changes faster than SEC filings but not every few minutes) — registered with the same proven `-AllowStartIfOnBatteries -StartWhenAvailable -WakeToRun` settings, confirmed correct in the task's own XML, manually triggered, confirmed via real log content.
+
+**Execution-impact assessment**: zero — every network call is a GET (Alpaca's News endpoint, never the trading host), and reaction computation only reads from the already-maintained `candles` table; no broker/order/position code is imported anywhere in this phase.
+
+**Known limitations, disclosed not hidden**:
+- `sentiment_score`/`novelty_score`/`confidence` are left `None` — Alpaca's News API doesn't provide sentiment, and this phase deliberately doesn't run an LLM sentiment pass (consistent with "never fabricate"; a credible candidate for a later pass if the brief wants it).
+- A multi-ticker article (common — the live "most-searched tickers" roundup touched 12 symbols) has its price reaction computed against only the FIRST listed ticker, since there's no per-article primary-ticker signal to prefer one symbol's reaction over another's — disclosed in the code, not silently treated as precise.
+- The keyword classifier is coarse by design — matches against headline+summary combined, so a passing mention (e.g. "...citing valuation, earnings outlook...") can tag an article EARNINGS even when the real subject is an analyst rating. Acceptable for this phase's scope; an ML classifier would be a deliberate, separate upgrade, not an oversight.
+
+**Next**: Phase 7 (equity relationship/knowledge graph) — ticker→company→industry→sector→sector ETF→index→peers, the natural filler for `equity_entities`' still-`None` sector/industry/exchange columns (Phase 4's own disclosed gap).
