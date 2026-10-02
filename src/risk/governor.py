@@ -576,6 +576,7 @@ def evaluate(
     reference_price: float | None = None,
     usd_rates: dict[str, float] | None = None,
     now: datetime | None = None,
+    existing_position_direction: str | None = None,  # "long"/"short" if `instrument` already has an open position, else None -- see no_pyramid_same_symbol gate
 ) -> RiskDecision:
     now = now or datetime.now(timezone.utc)
     gates: list[GateResult] = []
@@ -708,6 +709,34 @@ def evaluate(
     if not gate("max_positions", open_position_count < MAX_CONCURRENT_POSITIONS,
                 f"{open_position_count} open vs max {MAX_CONCURRENT_POSITIONS}"):
         return RiskDecision(False, "max concurrent positions reached", None, gates)
+
+    # --- no-pyramid gate (Critical Rule 0 / Equity V2 Phase 14): a
+    # same-direction signal against an already-open position in this
+    # exact instrument is blocked by default. Real bug this fixes,
+    # confirmed live 2026-10-02 against real order history: without this
+    # gate, the system kept adding to an already-open AAPL short (4
+    # separate real orders within ~40 minutes, each smaller only because
+    # margin was shrinking) and attempted dozens more on MSFT over
+    # several days — stopped only by running out of buying power (403
+    # errors), never by a deliberate risk decision. A signal in the
+    # OPPOSITE direction (the model now wants to reduce/close/reverse) is
+    # NOT blocked here — that's a different, legitimate case this gate
+    # was never evidence of a problem with. existing_position_direction
+    # is None for a caller that hasn't supplied it (e.g. older code
+    # paths, or genuinely flat) — gate passes trivially rather than
+    # blocking on an assumption.
+    if existing_position_direction is not None:
+        same_direction = (action == "BUY" and existing_position_direction == "long") or \
+                          (action == "SELL" and existing_position_direction == "short")
+        pyramid_detail = (
+            f"{instrument} already has an open {existing_position_direction} position — a new {action} would pyramid onto it"
+            if same_direction else
+            f"{instrument}'s existing {existing_position_direction} position is opposite this {action} signal — not pyramiding"
+        )
+        if not gate("no_pyramid_same_symbol", not same_direction, pyramid_detail):
+            return RiskDecision(False, "no-pyramid: already have a same-direction position in this instrument", None, gates)
+    else:
+        gate("no_pyramid_same_symbol", True, f"{instrument} has no existing position on record")
 
     usd_direction_key = usd_direction_of_trade(instrument, action)
     if usd_direction_key == "no_usd_leg":
@@ -864,6 +893,7 @@ def revalidate_before_submission(
     approved_size_units: float,
     reconciliation_ok: bool,
     now: datetime | None = None,
+    existing_position_direction: str | None = None,  # "long"/"short" if `instrument` already has an open position, else None -- see evaluate()'s own no_pyramid_same_symbol gate docstring
 ) -> RiskDecision:
     """Re-checks the PORTFOLIO-STATE-dependent gates immediately before a
     manually-approved order is actually sent (external review, P0-03,
@@ -946,6 +976,25 @@ def revalidate_before_submission(
     if not gate("max_positions", open_position_count < MAX_CONCURRENT_POSITIONS,
                 f"{open_position_count} open vs max {MAX_CONCURRENT_POSITIONS}"):
         return RiskDecision(False, "max concurrent positions reached", None, gates)
+
+    # Same no-pyramid gate evaluate() runs, re-checked here against the
+    # FRESHEST position state right before submission — the more
+    # failure-resistant of the two checks, since a second signal later in
+    # the same cycle might not have seen the position a first signal just
+    # opened by the time evaluate() originally ran. See evaluate()'s own
+    # gate for the real bug this fixes.
+    if existing_position_direction is not None:
+        same_direction = (action == "BUY" and existing_position_direction == "long") or \
+                          (action == "SELL" and existing_position_direction == "short")
+        pyramid_detail = (
+            f"{instrument} already has an open {existing_position_direction} position — a new {action} would pyramid onto it"
+            if same_direction else
+            f"{instrument}'s existing {existing_position_direction} position is opposite this {action} signal — not pyramiding"
+        )
+        if not gate("no_pyramid_same_symbol", not same_direction, pyramid_detail):
+            return RiskDecision(False, "no-pyramid: already have a same-direction position in this instrument", None, gates)
+    else:
+        gate("no_pyramid_same_symbol", True, f"{instrument} has no existing position on record")
 
     usd_direction_key = usd_direction_of_trade(instrument, action)
     size_units = approved_size_units

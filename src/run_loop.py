@@ -505,6 +505,30 @@ def compute_exposure(
     return open_count, exposure
 
 
+def compute_open_directions_by_instrument(
+    positions_raw: list[dict], broker_kind: BrokerKind, execution_mode: str,
+) -> dict[str, str]:
+    """instrument -> "long"/"short" for every currently-open position,
+    feeding risk_governor.evaluate()'s/revalidate_before_submission()'s
+    no_pyramid_same_symbol gate. Real bug this exists to let the governor
+    actually fix (confirmed live 2026-10-02 against real order history):
+    without per-instrument position awareness, the system kept adding to
+    an already-open AAPL short (4 separate real orders within ~40
+    minutes) and attempted dozens more on MSFT over several days — the
+    governor had only an AGGREGATE open-position count and a coarse
+    directional-bucket total, neither of which can see "this exact
+    symbol already has a position" at all. An instrument with net_units
+    of exactly 0 (fully flat, e.g. between a close and a new signal) is
+    omitted entirely, not recorded as either direction."""
+    directions: dict[str, str] = {}
+    for instrument, net_units, _ref_price in _normalized_positions(positions_raw, broker_kind, execution_mode):
+        if net_units > 0:
+            directions[instrument] = "long"
+        elif net_units < 0:
+            directions[instrument] = "short"
+    return directions
+
+
 async def compute_correlated_stop_risk(
     broker, broker_kind: BrokerKind, positions_raw: list[dict], execution_mode: str,
     usd_rates: dict[str, float] | None = None,
@@ -624,6 +648,7 @@ async def _evaluate_one_horizon(
     challengers: list[Challenger],
     usd_rates: dict[str, float],
     stop_risk: dict[str, float],
+    existing_position_direction: str | None = None,
 ) -> None:
     df = pd.DataFrame([dataclasses.asdict(c) for c in candles])
     featured = feature_ready_frame(df)
@@ -880,6 +905,7 @@ async def _evaluate_one_horizon(
         reference_price=price.mid,
         usd_rates=usd_rates,
         now=now,
+        existing_position_direction=existing_position_direction,
     )
 
     with engine.begin() as conn:
@@ -1013,6 +1039,7 @@ async def evaluate_pair(
     reconciliation_ok: bool,
     usd_rates: dict[str, float],
     stop_risk: dict[str, float],
+    open_directions: dict[str, str],
     horizon_configs: list[HorizonConfig] = HORIZON_CONFIGS,
 ) -> None:
     """Evaluates every configured horizon for one pair. Portfolio-wide state
@@ -1113,6 +1140,7 @@ async def evaluate_pair(
             challengers=challengers,
             usd_rates=usd_rates,
             stop_risk=stop_risk,
+            existing_position_direction=open_directions.get(pair),
         )
 
 
@@ -1134,6 +1162,7 @@ class BrokerCycleContext:
     reconciliation_ok: bool
     usd_rates: dict[str, float]
     stop_risk: dict[str, float]
+    open_directions: dict[str, str]  # instrument -> "long"/"short", feeds the no-pyramid gate
 
 
 async def _build_broker_cycle_context(
@@ -1163,6 +1192,7 @@ async def _build_broker_cycle_context(
     account_state = await broker.account_state()
     positions_raw = await broker.positions()
     open_count, exposure = compute_exposure(positions_raw, broker_kind, exec_mode_for_broker, usd_rates)
+    open_directions = compute_open_directions_by_instrument(positions_raw, broker_kind, exec_mode_for_broker)
     # PaperBroker simulates fills against its own DB ledger, not a real
     # broker-side protective order (see its positions()/place_order() —
     # no per-position "current live stop" to query, unlike a real OANDA/
@@ -1178,6 +1208,7 @@ async def _build_broker_cycle_context(
         broker=broker, execution_service=execution_service, price_models=price_models,
         account_state=account_state, open_count=open_count, exposure=exposure,
         reconciliation_ok=reconciliation_ok, usd_rates=usd_rates, stop_risk=stop_risk,
+        open_directions=open_directions,
     )
 
 
@@ -1301,6 +1332,7 @@ async def _run_once_for_user(
                     reconciliation_ok=ctx.reconciliation_ok,
                     usd_rates=ctx.usd_rates,
                     stop_risk=ctx.stop_risk,
+                    open_directions=ctx.open_directions,
                 )
     finally:
         for ctx in broker_contexts.values():

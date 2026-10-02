@@ -28,7 +28,7 @@ from src.risk.governor import PRICE_DRIFT_STOP_RATIO
 from src.risk import governor as risk_governor
 from src.execution.paper_broker import PaperBroker
 from src.execution.service import ExecutionService
-from src.run_loop import _build_usd_conversion_rates, compute_correlated_stop_risk, compute_exposure
+from src.run_loop import _build_usd_conversion_rates, compute_correlated_stop_risk, compute_exposure, compute_open_directions_by_instrument
 
 # A signal is only trustworthy for roughly as long as its own stated
 # horizon — the regime/price/macro/news snapshot it was built from goes
@@ -371,6 +371,7 @@ async def authorize(
         if broker_kind == "oanda" and not is_paper else {}
     )
     open_count, exposure = compute_exposure(positions_raw, broker_kind, execution_service.execution_mode, usd_rates)
+    open_directions = compute_open_directions_by_instrument(positions_raw, broker_kind, execution_service.execution_mode)
     stop_risk = (
         {} if is_paper
         else await compute_correlated_stop_risk(broker, broker_kind, positions_raw, execution_service.execution_mode, usd_rates)
@@ -389,6 +390,7 @@ async def authorize(
         approved_size_units=size_units,
         reconciliation_ok=reconciliation_ok,
         now=now,
+        existing_position_direction=open_directions.get(intent["instrument"]),
     )
     if not revalidation.approved:
         _release_claim()
