@@ -805,6 +805,129 @@ reconciliation_issues = Table(
 )
 
 
+# --- Equity V2 Phase 3: equity data model. Additive only -- these are new
+# tables, not a repurposing of the existing currency-keyed economic_events/
+# news_events (which stay exactly as-is for forex). Every point-in-time
+# table below separates the real-world period a value DESCRIBES from the
+# timestamp it actually became KNOWABLE (filed_at / announced_at / ingest_
+# time) -- a historical backtest must only ever see what was publicly known
+# as of its simulated "now," never a value from its own future (the brief's
+# own "no look-ahead bias" requirement, sec. 11). ---
+
+# --- equity_entities: ticker -> company/sector/industry/index reference
+# data (Phase 7's relationship graph consumes this). Slow-changing, so one
+# row per ticker (kept current via upsert), not an append-only history --
+# unlike fundamentals/events below, a wrong sector classification has no
+# "as of which filing" question; it just gets corrected in place.
+equity_entities = Table(
+    "equity_entities",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ticker", String, nullable=False, index=True),
+    Column("cik", String, nullable=True, index=True),  # SEC EDGAR's own identifier (Phase 4)
+    Column("company_name", String, nullable=True),
+    Column("sector", String, nullable=True, index=True),
+    Column("industry", String, nullable=True, index=True),
+    Column("exchange", String, nullable=True),
+    Column("sector_etf", String, nullable=True),  # e.g. "XLK" -- Phase 8's sector-relative features
+    Column("index_membership", String, nullable=True),  # comma-separated, e.g. "SPX,NDX"
+    Column("source", String, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("ticker", name="uq_equity_entity_ticker"),
+)
+
+# --- company_fundamentals: SEC EDGAR structured financials (Phase 4/5), one
+# row per (ticker, period, metric) -- an EAV shape (not one wide row per
+# filing) because the set of reported metrics varies by company/form-type
+# and a missing metric must be a genuinely absent row, never a fabricated
+# 0/null placeholder (Phase 5's "never fabricate missing data" rule).
+company_fundamentals = Table(
+    "company_fundamentals",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ticker", String, nullable=False, index=True),
+    Column("period_end", DateTime(timezone=True), nullable=False, index=True),  # fiscal period this value describes
+    Column("filed_at", DateTime(timezone=True), nullable=False, index=True),  # SEC publish time -- the only point this was knowable
+    Column("fiscal_period", String, nullable=False),  # e.g. "Q1-2026", "FY2025"
+    Column("form_type", String, nullable=False),  # 10-Q / 10-K / 8-K
+    Column("metric", String, nullable=False, index=True),  # e.g. "revenue", "net_income", "operating_cash_flow"
+    Column("value", Float, nullable=True),  # nullable: an absent metric is recorded as absent, not guessed
+    Column("unit", String, nullable=True),
+    Column("source", String, nullable=False),
+    Column("accession_number", String, nullable=True),  # SEC's own filing identifier, for traceability back to the source document
+    # filed_at is part of the key, not just period_end/metric/source: a
+    # later filing can restate an earlier period's value (e.g. a 10-K
+    # correcting a prior 10-Q), and that restatement is a NEW point-in-time
+    # fact, not an update to the old one -- a backtest replaying "as of" a
+    # historical date must still be able to see only the filing(s) that
+    # existed by then. Real bug caught by its own test before this ever
+    # shipped: the original constraint (without filed_at) made a genuine
+    # restatement collide with the original filing and fail to insert.
+    UniqueConstraint("ticker", "period_end", "metric", "source", "filed_at", name="uq_company_fundamental"),
+)
+
+# --- company_events: corporate actions/calendar (earnings dates, M&A,
+# guidance, splits, dividends) feeding Phase 6/13's event-awareness. Distinct
+# from equity_news below: this is the structured calendar fact; equity_news
+# is the unstructured article reporting on it.
+company_events = Table(
+    "company_events",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ticker", String, nullable=False, index=True),
+    Column("event_time", DateTime(timezone=True), nullable=False, index=True),  # when the event itself occurs/occurred
+    Column("announced_at", DateTime(timezone=True), nullable=False),  # when the market first learned of it
+    Column("event_type", String, nullable=False, index=True),  # EARNINGS / GUIDANCE / SEC_FILING / M&A / SPLIT / DIVIDEND / ...
+    Column("description", Text, nullable=False),
+    Column("source", String, nullable=False),
+    Column("url", String, nullable=True),
+    UniqueConstraint("ticker", "event_time", "event_type", "source", name="uq_company_event"),
+)
+
+# --- equity_news: ticker-aware news, parallel to but never merged with the
+# existing currency-keyed news_events table (forex news stays on its own
+# path, untouched). Adds a measured-after-the-fact price reaction instead of
+# treating sentiment as a trade signal directly (Phase 6's explicit
+# correction: "measure actual subsequent market reaction rather than
+# equating sentiment with BUY") -- reaction_computed_at stays NULL until a
+# later job fills it in once enough time has actually passed.
+equity_news = Table(
+    "equity_news",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("publish_time", DateTime(timezone=True), nullable=False, index=True),
+    Column("ingest_time", DateTime(timezone=True), nullable=False),
+    Column("source", String, nullable=False),
+    Column("headline", String, nullable=False),
+    Column("url", String, nullable=True),
+    Column("tickers", String, nullable=False, index=True),  # comma-separated
+    Column("event_type", String, nullable=True),  # same vocabulary as company_events.event_type
+    Column("sentiment_score", Float, nullable=True),  # -1..1
+    Column("novelty_score", Float, nullable=True),  # 0..1
+    Column("confidence", Float, nullable=True),  # 0..1
+    Column("price_reaction_1h", Float, nullable=True),
+    Column("price_reaction_1d", Float, nullable=True),
+    Column("reaction_computed_at", DateTime(timezone=True), nullable=True),
+    UniqueConstraint("url", name="uq_equity_news_url"),
+)
+
+# --- market_context: cross-market point-in-time readings (SPY/QQQ/sector
+# ETFs, yields, VIX, breadth) feeding Phase 8/9's cross-market and feature-
+# engine work. One row per (time, metric) rather than one wide row per
+# timestamp, matching economic_events/company_fundamentals' own EAV shape so
+# a new metric is a new row type, never a schema migration.
+market_context = Table(
+    "market_context",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("time", DateTime(timezone=True), nullable=False, index=True),
+    Column("metric", String, nullable=False, index=True),  # e.g. "SPY_close", "VIX", "US10Y_yield", "XLK_relative_strength"
+    Column("value", Float, nullable=True),
+    Column("source", String, nullable=False),
+    UniqueConstraint("time", "metric", "source", name="uq_market_context"),
+)
+
+
 @functools.lru_cache(maxsize=None)
 def get_engine(db_path):
     """Every DB access in this project goes through this one function (21

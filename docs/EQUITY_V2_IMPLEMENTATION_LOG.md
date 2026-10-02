@@ -83,3 +83,27 @@ Per-phase entries record: files changed, schema changes, tests added, tests pass
 - Live verification was performed during off-market hours — real live data was only actually observed flowing on the **crypto** endpoint (BTC/USD, trades 24/7); the **equity** endpoint's connect/auth/subscribe round-trip was verified live but no real equity tick was observed flowing (US equity markets were closed at verification time). The equity parsing path is exercised only by the fake-connection unit tests, not a live tick, pending a future off-hours-aware re-check.
 
 **Next**: per "go on until you finish" — continuing to the next phase in the brief's dependency order (equity data model tables / historical data layer), treating OANDA as permanently out of scope throughout.
+
+---
+
+## Phase 3 — Equity Data Model — **DONE**
+
+2026-10-01. Added five new additive tables to `src/data/db.py`: `equity_entities` (ticker→company/sector/industry/index reference data), `company_fundamentals` (SEC EDGAR structured financials, EAV-shaped per metric), `company_events` (earnings/guidance/M&A/split/dividend calendar), `equity_news` (ticker-aware news, parallel to but never merged with the existing currency-keyed `news_events`), `market_context` (cross-market readings: SPY/QQQ/sector ETFs/yields/VIX, EAV-shaped per metric).
+
+**Point-in-time discipline, per the brief's own no-look-ahead-bias requirement (sec. 11)**: every table separates the real-world period a value *describes* from the timestamp it actually became *knowable* — `company_fundamentals.filed_at` vs. `period_end`, `company_events.announced_at` vs. `event_time`, `equity_news.publish_time`/`ingest_time`, `market_context.time`. A historical backtest filtering on these timestamps can never see a value from its own simulated future.
+
+**Real schema bug caught by its own test before shipping**: the first version of `company_fundamentals`'s unique constraint was `(ticker, period_end, metric, source)` — a test modeling a genuine restatement (a 10-K correcting an earlier 10-Q's revenue figure, same ticker/period/metric/source, later `filed_at`) failed to insert, colliding with the original filing. A restatement is a new point-in-time fact, not an overwrite of the old one — a replay "as of" an earlier date must still see only the filing(s) that existed by then. Fixed by adding `filed_at` to the constraint; the restatement test (and a sibling same-filing-twice duplicate-rejection test) now both pass correctly.
+
+**Files changed**: `src/data/db.py` (+5 tables), `tests/test_equity_data_model.py` (new, 11 tests).
+
+**Schema changes**: additive only, confirmed both via `metadata.create_all()`'s own additive semantics (an existing `candles` insert/select round-trip is exercised in the same test file to confirm the pre-existing schema is untouched) and by running `get_engine()` directly against the real production Postgres database — all 5 new tables created cleanly, table count went from 38 to 43, zero existing tables altered.
+
+**Tests**: `tests/test_equity_data_model.py`, 11 tests — all 5 tables exist in metadata, additive creation doesn't disturb a pre-existing table, each table's unique constraint (including the restatement fix above), and the "missing fundamental metric is an explicit NULL row, never fabricated" case. Full suite: **170/170 passing** (159 prior + 11 new).
+
+**Execution-impact assessment**: zero — schema-only change, no broker call anywhere in this phase.
+
+**Known limitations, disclosed not hidden**:
+- No ingestion code yet — these are empty tables awaiting Phase 4 (SEC EDGAR) / Phase 6 (equity news) / Phase 8 (cross-market features) to actually write into them.
+- `equity_entities` is a single current-state row per ticker (upsert-shaped), not an append-only history — a sector reclassification overwrites in place, which the brief doesn't ask to be point-in-time (unlike fundamentals/events), so this is a deliberate, disclosed asymmetry in the schema's design, not an oversight.
+
+**Next**: Phase 4 (SEC EDGAR intelligence, `src/equity/sec_edgar.py`) — the first real consumer of `company_fundamentals`/`equity_entities`.
