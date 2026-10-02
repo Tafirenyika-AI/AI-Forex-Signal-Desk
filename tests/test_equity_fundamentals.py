@@ -18,7 +18,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 os.chdir(PROJECT_ROOT)
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.features.equity_fundamentals import compute_fundamental_features
+import pytest
+from sqlalchemy import create_engine, insert
+
+from src.data.db import company_fundamentals as company_fundamentals_table
+from src.data.db import metadata
+from src.features.equity_fundamentals import compute_fundamental_features, load_fundamentals_rows
 
 
 def _row(metric, period_start, period_end, filed_at, value, ticker="NVDA"):
@@ -145,3 +150,27 @@ def test_revenue_prefers_whichever_of_the_two_revenue_tags_has_data():
     rows = [_row("RevenueFromContractWithCustomerExcludingAssessedTax", (2026, 4, 27), (2026, 7, 26), (2026, 8, 26), 50_000_000_000)]
     features = compute_fundamental_features(rows, "NVDA", datetime(2026, 9, 1, tzinfo=timezone.utc))
     assert features.revenue == 50_000_000_000
+
+
+def test_load_fundamentals_rows_normalizes_sqlite_naive_datetimes_to_utc():
+    # Real bug caught by Phase 9's equity_engine tests, not here originally:
+    # SQLite silently drops tzinfo on a DateTime(timezone=True) round-trip
+    # (production Postgres does not), which made compute_fundamental_
+    # features raise "can't compare offset-naive and offset-aware
+    # datetimes" the first time this function was ever exercised against a
+    # real (if in-memory) engine rather than hand-built dicts.
+    engine = create_engine("sqlite:///:memory:")
+    metadata.create_all(engine)
+    period_end = datetime(2026, 7, 26, tzinfo=timezone.utc)
+    with engine.begin() as conn:
+        conn.execute(insert(company_fundamentals_table), {
+            "ticker": "NVDA", "period_start": period_end, "period_end": period_end,
+            "filed_at": datetime(2026, 8, 26, tzinfo=timezone.utc),
+            "fiscal_period": "Q2-FY2027", "form_type": "10-Q", "metric": "Revenues",
+            "value": 96_221_000_000.0, "unit": "USD", "source": "sec_edgar",
+        })
+    rows = load_fundamentals_rows(engine, "NVDA")
+    assert rows[0]["filed_at"].tzinfo is not None
+    # Must not raise -- this is the exact comparison that used to fail.
+    features = compute_fundamental_features(rows, "NVDA", datetime(2026, 9, 1, tzinfo=timezone.utc))
+    assert features.revenue == 96_221_000_000.0

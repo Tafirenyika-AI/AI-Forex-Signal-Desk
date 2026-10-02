@@ -26,12 +26,28 @@ shares the latest available period_end.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
 from src.data.db import company_fundamentals as company_fundamentals_table
+
+_DATETIME_FIELDS = ("period_start", "period_end", "filed_at")
+
+
+def _ensure_utc(value: datetime | None) -> datetime | None:
+    """Defensive normalization, not a logic fix: SQLite (used by this
+    project's own test suite via an in-memory engine) silently drops
+    tzinfo on a DateTime(timezone=True) column round-trip, unlike
+    production Postgres which preserves it — caught by Phase 9's
+    equity_engine tests, the first to exercise this function against a
+    real (if in-memory) engine rather than pure Python dicts. A naive
+    value read back out is assumed UTC (every datetime this project
+    stores is UTC already), never a silent wrong-timezone guess."""
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 # Revenue can be tagged under either of these in real filings (post-ASC606
 # filers commonly switched tags) — treated as one logical "revenue" metric,
@@ -75,7 +91,11 @@ def load_fundamentals_rows(engine: Engine, ticker: str) -> list[dict]:
         .order_by(company_fundamentals_table.c.period_end.asc())
     )
     with engine.connect() as conn:
-        return [dict(row._mapping) for row in conn.execute(stmt)]
+        rows = [dict(row._mapping) for row in conn.execute(stmt)]
+    for row in rows:
+        for field_name in _DATETIME_FIELDS:
+            row[field_name] = _ensure_utc(row[field_name])
+    return rows
 
 
 def _candidates(rows: list[dict], metrics: tuple[str, ...], as_of: datetime) -> list[dict]:
