@@ -233,3 +233,30 @@ Per-phase entries record: files changed, schema changes, tests added, tests pass
 - Peer-matching is exact-SIC-code only (4-digit) — two genuinely related companies with adjacent-but-different SIC codes (common, since SIC is a coarser, older scheme than real industry practice) won't show up as each other's peers yet; a looser (e.g. 3-digit-prefix) matching mode is a reasonable future refinement, not implemented here to avoid false-peer noise without real evidence of its value.
 
 **Next**: Phase 8 (cross-market features — SPY/QQQ/sector ETF/yields/relative volume/VWAP distance) — the first real consumer of `equity_entities.sector_etf`.
+
+---
+
+## Phase 8 — Cross-Market Features — **DONE**
+
+2026-10-02. Built `src/features/equity_cross_market.py` (`compute_cross_market_features`) — relative volume, overnight gap%, volatility percentile, return-vs-SPY, return-vs-sector-ETF, and VWAP distance, all causal (point-in-time, no future bars) over this project's own already-stored H1 candles, same discipline as `src/features/engine.py`.
+
+**A real, necessary prerequisite fix found along the way**: computing return-vs-SPY/return-vs-sector-ETF needs real SPY and sector-ETF candle history, which this project had never backfilled (only instruments a user actually trades get backfilled by `src/scripts/backfill_candles.py`). Extending that script to also always backfill `BENCHMARK_INSTRUMENTS` (SPY + every sector ETF `src/equity/relationships.py`'s `SIC_TO_SECTOR` can resolve to — derived from that list, not a separate hardcoded one) surfaced that **the script's `main()` still unconditionally backfilled OANDA on every run** — a real, standing conflict with the user's explicit 2026-09-30 "OANDA is permanently erased" decision that this script had never been updated for (unlike `sync_outcomes.py`, which already had its own OANDA-removal note). Confirmed it wasn't on any recurring schedule (so it hadn't been silently resurrecting OANDA data on its own), then removed the OANDA backfill block entirely, matching the standard every other sync script in this project already follows.
+
+**Never fabricates Level II data from Level I quotes (the brief's own Phase 8 caution, explicit)**: `approx_vwap` is disclosed as a standard OHLCV-bar approximation of VWAP (volume-weighted typical price over a trailing window), not a claim of real tick-level VWAP, which this project has no data source for.
+
+**`gap_pct` uses an honest overnight-gap definition** at the only granularity this project actually maintains hourly data at (H1) — each UTC calendar day's first bar's open vs. the prior trading day's last bar's close — rather than a same-bar artifact or fabricating a daily bar this project doesn't have.
+
+**Files changed**: `src/scripts/backfill_candles.py` (removed the OANDA backfill block; added `BENCHMARK_INSTRUMENTS`), `src/features/equity_cross_market.py` (new, ~165 lines), `tests/test_equity_cross_market.py` (new, 9 tests).
+
+**Live-verified against real production data**: ran the (now Alpaca-only) backfill script for real, which pulled genuine SPY + sector-ETF (XLK/XLF/XLV/XLE/XLI/XLB/XLC/XLU/XLY/XLP/XLRE) candle history across M15/H1/H4 for the first time in this project. Confirmed via a direct query that real rows landed for every benchmark instrument.
+
+**Tests**: `tests/test_equity_cross_market.py`, 9 tests — no-data-means-everything-missing, relative volume detection, the real overnight-gap calculation (and its one-calendar-day-of-data None case), volatility percentile ranking, return-vs-SPY outperformance (and its no-SPY-data None case), VWAP distance sign, and a dedicated `approx_vwap` test proving it's genuinely volume-weighted (not a simple average that a low-volume outlier bar could otherwise distort). Full suite: see totals in the commit.
+
+**Execution-impact assessment**: zero — `compute_cross_market_features` is pure computation over already-loaded candle frames, no DB/network access; the backfill script change is read-only market-data fetching (plus the OANDA-backfill *removal*, which reduces risk rather than adding any).
+
+**Known limitations, disclosed not hidden**:
+- No dedicated sync/scheduled task for this phase — it's a pure feature-computation library consumed by Phase 9's feature engine (not yet wired in), same shape as Phase 5's `equity_fundamentals.py`. The benchmark candle data it depends on is kept fresh by the existing (now-fixed) `backfill_candles.py`, which is a manually-run script, not yet on a recurring schedule itself — a reasonable future candidate for its own scheduled task.
+- `return_vs_sector_etf` requires `equity_entities.sector_etf` to already be populated (Phase 7) — a ticker Phase 7 hasn't enriched yet gets `None` for this feature, correctly, rather than guessing a sector.
+- Yields (10Y/2Y) are NOT re-ingested into `market_context` by this phase — they're already available from the existing FRED-sourced `market_indicators` table (forex-era, but genuinely currency-agnostic data), so a future Phase 9 feature engine should read from there rather than this phase duplicating that ingestion.
+
+**Next**: Phase 9 (equity feature engine, `src/features/equity_engine.py`) — the first real consumer that wires Phases 5/7/8's feature functions together into one pipeline with value+as_of+source+freshness+availability metadata per feature.
