@@ -28,12 +28,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import asyncio
 import json
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import Integer, func, select
+
+
+logger = logging.getLogger(__name__)
 
 
 def _drop_stale_src_modules() -> None:
@@ -81,7 +85,10 @@ from src.dashboard.auth_gate import _logo_base64 as _brand_logo_base64
 from src.data.db import (
     cftc_positioning as cftc_positioning_table,
     challenger_decisions as challenger_decisions_table,
+    company_fundamentals as company_fundamentals_table,
     economic_events as economic_events_table,
+    equity_entities as equity_entities_table,
+    equity_news as equity_news_table,
     get_engine,
     invitations as invitations_table,
     knowledge_documents as knowledge_documents_table,
@@ -91,6 +98,7 @@ from src.data.db import (
     news_events as news_events_table,
     orders_fills,
     predictions as predictions_table,
+    reconciliation_issues as reconciliation_issues_table,
     risk_decisions as risk_decisions_table,
     risk_state,
     risk_state_weekly as risk_state_weekly_table,
@@ -102,6 +110,8 @@ from src.data.db import (
     trade_outcomes as trade_outcomes_table,
     users as users_table,
 )
+from src.evaluation.equity_performance import build_performance_report
+from src.features.engine import load_candles_df
 from src.execution.paper_broker import PaperBroker
 from src.execution.service import ExecutionService
 from src.decision.fusion import COMPONENT_WEIGHTS, REGIME_WEIGHT_MULTIPLIERS
@@ -698,6 +708,46 @@ async def _fetch_alpaca_account_state():
 @st.cache_data(ttl=15, show_spinner=False)
 def cached_alpaca_account_state(user_id: int):
     return run_async(_fetch_alpaca_account_state())
+
+
+async def _fetch_alpaca_portfolio_history():
+    async with AlpacaBroker(settings) as broker:
+        return await broker.portfolio_history(period="1M", timeframe="1D")
+
+
+@st.cache_data(ttl=300, show_spinner=False)  # slow-changing (daily bars) -- a 5min TTL avoids hammering the endpoint every rerun
+def cached_alpaca_portfolio_history(user_id: int):
+    return run_async(_fetch_alpaca_portfolio_history())
+
+
+@st.cache_data(ttl=300, show_spinner=False)  # benchmark candles barely change within a 5min window -- avoids a DB round trip on every rerun
+def cached_benchmark_candles_df(instrument: str, granularity: str):
+    return load_candles_df(engine, instrument, granularity)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cached_recent_equity_news(limit: int = 500) -> list[dict]:
+    # One query for every ticker's most-recent-article lookup, not one
+    # query PER ticker -- the same N+1 pattern this project's own "Dashboard
+    # perf fixes" memory already caught once (calibration.all_reports()'s
+    # ~78x N+1). With equity_news still small (low hundreds of rows), a
+    # single bounded fetch + an in-Python match per ticker is both correct
+    # and far cheaper than N round trips to a remote database.
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(equity_news_table.c.publish_time, equity_news_table.c.tickers,
+                   equity_news_table.c.headline, equity_news_table.c.event_type)
+            .order_by(equity_news_table.c.publish_time.desc())
+            .limit(limit)
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def _most_recent_news_for_ticker(news_rows: list[dict], ticker: str) -> dict | None:
+    for row in news_rows:
+        if ticker in row["tickers"].split(","):
+            return row
+    return None
 
 
 def pl_pct_for_broker(broker_kind: str, mode: str) -> tuple[float | None, float | None]:
@@ -1386,13 +1436,13 @@ st.sidebar.caption("Live data (prices, account) is cached 15s so switching tabs 
 # ------------------------------------------------------------------ tabs --
 _tab_labels = ["🛰️ Mission Control", "📊 Markets", "🗳️ Agent Council", "🚦 Pending Signals", "📈 Trade History", "🧠 Model Learning",
                "🥊 Challengers", "📚 Knowledge Lab", "🌍 Currency Map", "💰 Account", "🛡️ Risk Center",
-               "⚙️ Automation Center", "📜 Audit Log", "📋 All Signals"]
+               "⚙️ Automation Center", "📜 Audit Log", "📋 All Signals", "🧬 Equity Intelligence"]
 if CURRENT_IS_ADMIN:
     _tab_labels.append("🛠️ Admin")
 _tabs = st.tabs(_tab_labels)
 (tab_mission, tab_markets, tab_council, tab_signals, tab_trades, tab_learning, tab_challengers, tab_knowledge,
- tab_currency, tab_account, tab_risk, tab_automation, tab_history, tab_all) = _tabs[:14]
-tab_admin = _tabs[14] if CURRENT_IS_ADMIN else None
+ tab_currency, tab_account, tab_risk, tab_automation, tab_history, tab_all, tab_equity_intel) = _tabs[:15]
+tab_admin = _tabs[15] if CURRENT_IS_ADMIN else None
 
 HORIZON_ORDER = {"15m": 0, "1h": 1, "4h": 2, "1d": 3}
 HORIZON_STYLE_HINT = {
@@ -2649,6 +2699,157 @@ with tab_all:
         ))
     else:
         empty_state("No signals generated yet.")
+
+with tab_equity_intel:
+    st.subheader("Equity Intelligence")
+    st.caption(
+        "Equity V2 Phase 16. Data health for the SEC/news/relationship pipelines, "
+        "reconciled broker-verified-vs-internal performance (Phase 15), and open "
+        "reconciliation findings (Phase 1). The Phase 10 challenger models and "
+        "Phase 13 risk-governor extensions referenced below are explicitly "
+        "SHADOW-ONLY — nothing on this tab drives a real trade; the live decisions "
+        "that do are the existing price model + src/decision/fusion.py, shown "
+        "elsewhere in this dashboard. Never label a number here as broker-verified "
+        "unless it actually came from the broker."
+    )
+
+    equity_tickers = sorted({i.upper() for i in _all_instruments if asset_class_for(i) == "equity"})
+
+    st.markdown("#### Data health")
+    with engine.connect() as conn:
+        last_entity_sync = conn.execute(select(func.max(equity_entities_table.c.updated_at))).scalar()
+        last_fundamentals_filed = conn.execute(select(func.max(company_fundamentals_table.c.filed_at))).scalar()
+        last_news_ingest = conn.execute(select(func.max(equity_news_table.c.ingest_time))).scalar()
+    h1, h2, h3 = st.columns(3)
+    with h1:
+        stat_tile("Sector/relationship data (Phase 7)",
+                   last_entity_sync.strftime("%Y-%m-%d %H:%M UTC") if last_entity_sync else "never synced",
+                   f"{len(equity_tickers)} equity ticker(s) in your instrument list")
+    with h2:
+        stat_tile("SEC fundamentals (Phase 4)",
+                   f"latest filing {last_fundamentals_filed.strftime('%Y-%m-%d')}" if last_fundamentals_filed else "none yet", "")
+    with h3:
+        stat_tile("Equity news (Phase 6)",
+                   last_news_ingest.strftime("%Y-%m-%d %H:%M UTC") if last_news_ingest else "never synced", "")
+
+    st.write("")
+    # Gated behind an explicit click, not run on every page load: this
+    # section's real Alpaca portfolio-history/positions calls plus several
+    # DB queries measurably pushed this dashboard's total render time up
+    # against (and briefly over) the 120s smoke-test ceiling when it ran
+    # unconditionally — confirmed by direct timing of each piece (a few
+    # seconds each) that didn't individually explain the total, and by
+    # three consecutive full-dashboard runs trending 103s -> 118s -> a
+    # genuine 135s timeout. A lazy, click-to-load gate is the only fix that
+    # structurally guarantees this section adds ZERO cost to every other
+    # page load, rather than relying on caching (which only helps on a
+    # SECOND rerun — no help to a true one-shot render, like the smoke
+    # test itself, or a user's very first visit to this tab).
+    if not st.button("Load performance, reconciliation & per-ticker data"):
+        empty_state("Click above to load (real Alpaca + DB calls — not run automatically on every page load).")
+    elif not _alpaca_configured():
+        empty_state("Alpaca isn't configured for this account yet — performance/reconciliation below need it.")
+    else:
+        st.write("")
+        st.markdown("#### Performance — broker-verified vs. internal, never blended")
+        try:
+            _, _alpaca_positions = cached_alpaca_account_state(CURRENT_USER_ID)
+            _portfolio_history = cached_alpaca_portfolio_history(CURRENT_USER_ID)
+            _period_end = datetime.now(timezone.utc)
+            _period_start = _period_end - timedelta(days=30)
+            _spy_df = cached_benchmark_candles_df("SPY", "H1")
+            _qqq_df = cached_benchmark_candles_df("QQQ", "H1")
+            _report = build_performance_report(
+                engine, CURRENT_USER_ID, "alpaca", _period_start, _period_end,
+                _portfolio_history, _alpaca_positions, spy_candles=_spy_df, qqq_candles=_qqq_df,
+            )
+            p1, p2, p3, p4 = st.columns(4)
+            with p1:
+                stat_tile(
+                    "Broker account return (30d)",
+                    f"{_report.broker_account_return_pct:+.2%}" if _report.broker_account_return_pct is not None else "n/a",
+                    f"${_report.broker_account_return_usd:+,.0f}" if _report.broker_account_return_usd is not None else "",
+                    polarity="positive" if (_report.broker_account_return_usd or 0) >= 0 else "negative",
+                )
+            with p2:
+                stat_tile(
+                    "Model-attributable realized P/L",
+                    f"${_report.model_attributable_realized_pl_usd:+,.0f}",
+                    f"{_report.n_model_attributable_trades} trade(s) linked to a real signal",
+                    polarity="positive" if _report.model_attributable_realized_pl_usd >= 0 else "negative",
+                )
+            with p3:
+                stat_tile(
+                    "Unexplained realized P/L",
+                    f"${_report.unexplained_realized_pl_usd:+,.0f}",
+                    f"{_report.n_unexplained_trades} trade(s) with no linked signal — see Phase 1 reconciliation",
+                    polarity="negative" if _report.unexplained_realized_pl_usd < 0 else None,
+                )
+            with p4:
+                stat_tile(
+                    "Current unrealized P/L",
+                    f"${_report.current_unrealized_pl_usd:+,.0f}",
+                    "open positions, mark-to-market — not yet real",
+                    polarity="positive" if _report.current_unrealized_pl_usd >= 0 else "negative",
+                )
+            _spy_caption = (
+                f"vs SPY: {_report.account_return_vs_spy_pct:+.2%}" if _report.account_return_vs_spy_pct is not None
+                else "vs SPY: n/a (benchmark history doesn't cover this window)"
+            )
+            _qqq_caption = (
+                f"vs QQQ: {_report.account_return_vs_qqq_pct:+.2%}" if _report.account_return_vs_qqq_pct is not None
+                else "vs QQQ: n/a"
+            )
+            st.caption(f"{_spy_caption}  ·  {_qqq_caption}")
+        except Exception:
+            logger.exception("Equity performance report failed to render")
+            empty_state("Couldn't load the performance report this cycle — see server logs.")
+
+        st.write("")
+        st.markdown("#### Open reconciliation findings (Phase 1)")
+        with engine.connect() as conn:
+            _issues = conn.execute(
+                select(reconciliation_issues_table)
+                .where(reconciliation_issues_table.c.resolved_at.is_(None))
+                .order_by(reconciliation_issues_table.c.detected_at.desc())
+                .limit(20)
+            ).mappings().all()
+        if _issues:
+            _issues_df = pd.DataFrame([dict(r) for r in _issues])
+            section_card(lambda: st.dataframe(
+                _issues_df[["detected_at", "severity", "symbol", "issue_type", "description"]],
+                width="stretch", hide_index=True,
+            ))
+        else:
+            empty_state("No open (unresolved) reconciliation findings.")
+
+        st.write("")
+        st.markdown("#### Per-ticker snapshot")
+        if not equity_tickers:
+            empty_state("No equity tickers in your instrument list yet.")
+        else:
+            with engine.connect() as conn:
+                _sector_rows = conn.execute(
+                    select(equity_entities_table.c.ticker, equity_entities_table.c.sector, equity_entities_table.c.sector_etf)
+                    .where(equity_entities_table.c.ticker.in_(equity_tickers))
+                ).mappings().all()
+            _sector_by_ticker = {r["ticker"]: r for r in _sector_rows}
+
+            _recent_news = cached_recent_equity_news()
+            _snapshot_rows = []
+            for ticker in equity_tickers:
+                sector_row = _sector_by_ticker.get(ticker)
+                _news_row = _most_recent_news_for_ticker(_recent_news, ticker)
+                _snapshot_rows.append({
+                    "Ticker": ticker,
+                    "Sector": sector_row["sector"] if sector_row else "not yet enriched",
+                    "Sector ETF": sector_row["sector_etf"] if sector_row else "—",
+                    "Most recent news": _news_row["headline"] if _news_row else "—",
+                    "Event type": (_news_row["event_type"] if _news_row and _news_row["event_type"] else "—"),
+                    "News published": _news_row["publish_time"].strftime("%Y-%m-%d %H:%M UTC") if _news_row else "—",
+                })
+            section_card(lambda: st.dataframe(pd.DataFrame(_snapshot_rows), width="stretch", hide_index=True))
+
 
 # ---------------------------------------------------------------- admin --
 if CURRENT_IS_ADMIN and tab_admin is not None:
