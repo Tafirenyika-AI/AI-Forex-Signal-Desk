@@ -550,3 +550,29 @@ Then trained real challenger models end-to-end on real NVDA data (simple 80/20 c
 - `ExecutionService.execute()`'s own idempotency guarantees only the LOG never shows a duplicate — it does not itself prevent a genuine duplicate broker call (confirmed directly: the fake broker's `place_order` was called twice in the idempotency test). Real duplicate-fill protection lives at the broker's own `client_order_id` uniqueness guarantee, outside this project's control to test directly without a real broker account.
 
 **Next**: Phase 20 (deployment mode confirmation — RESEARCH + PAPER ONLY, confirm `src/config.py`'s live-trading refusal is untouched for both brokers) — the final phase.
+
+---
+
+## Phase 20 — Deployment Mode Confirmation — **DONE. All 20 phases of the Equity V2 brief are now complete.**
+
+2026-10-02. The final phase: confirm, with direct automated tests rather than a one-time manual read, that this entire 18-build-phase effort never touched the hard "RESEARCH + PAPER ONLY" refusal for either broker, and never loosened any existing risk constant.
+
+**Audited directly before writing anything**: `src/config.py`'s `_validate_environment` (OANDA) and `_validate_alpaca_environment` (Alpaca) are confirmed, by grep, to be the ONLY two places `Settings()` is ever constructed anywhere in `src/` — no code path anywhere could bypass either refusal even if it wanted to. `_validate_alpaca_environment` already had direct unit tests (from an earlier external-review phase, `tests/test_auth_hardening.py`) — including a previously-fixed real subdomain-spoofing bypass (`https://paper-api.alpaca.markets.evil.com`). `_validate_environment` (OANDA's own refusal) had **zero** direct test coverage at all — a real, confirmed gap, closed in this phase.
+
+**Built `tests/test_deployment_mode_confirmation.py`** (new, 12 tests) as a permanent regression guard, not just a point-in-time confirmation: OANDA's refusal tested directly (practice allowed, live refused, a garbage value also refused rather than silently passing) AND at the `load_settings()` integration level (confirms the function is actually called, not just correct in isolation, via `monkeypatch.setenv`); the same integration-level confirmation added for Alpaca's existing refusal. Five more tests LOCK the pre-existing risk constants (`RISK_PER_TRADE_PCT`, `RISK_PER_TRADE_CEILING_PCT`, `DAILY_LOSS_LIMIT_PCT`, `WEEKLY_LOSS_LIMIT_PCT`, `MAX_CONCURRENT_POSITIONS`, `MAX_CORRELATED_EXPOSURE_PCT`, `MAX_EQUITY_CRYPTO_NOTIONAL_PCT`, `MIN_CONFIDENCE`) at their exact current values — a future change to any of these without deliberately updating this test too will now fail loudly, exactly the kind of silent risk-increase the brief's own "do not increase leverage/risk to chase returns" instruction forbids.
+
+**Also directly confirmed** (not just assumed from memory): `src/run_loop.py`'s CLI flags — `--mode` defaults to `"shadow"` (the safest of the three), `--auto-execute` and `--enable-trailing-stops` are both `action="store_true"` (default `False`, opt-in only) — none of this session's 18 build phases touched any of these defaults.
+
+**Progression confirmed as exactly where this project actually is, honestly, not overstated**: backtest (Phases 10–12) → walk-forward (Phase 11) → shadow (Phases 10/13, confirmed by grep to be genuinely unwired) → Alpaca paper (the live system itself, already running all session) → extended verified paper performance (Phase 15's real 30-day reconciled numbers) → human review (every phase this session required explicit AskUserQuestion approval before anything execution-adjacent, most notably Phase 14's real governor fix) → live decision remains explicitly, deliberately out of scope, exactly as the brief's own Phase 20 instruction states.
+
+**Files changed**: `tests/test_deployment_mode_confirmation.py` (new, 12 tests).
+
+**Tests**: the 12 tests above. Full suite: **336/336 passing** (324 prior + 12 new) — every single test from every phase of this entire effort still passes together.
+
+**Execution-impact assessment**: zero — every test is a read-only assertion against configuration/constants; the two `load_settings()` integration tests use `monkeypatch.setenv` with fake credentials, never touching real environment variables or a real account.
+
+---
+
+## Summary: all 20 phases of the "AI TRADING DESK — EQUITY INTELLIGENCE V2" brief are complete
+
+Phase 0 (audit) → Phase 20 (deployment confirmation), built incrementally over one continuous session (2026-10-01/02), each phase live-verified against real production data before being trusted, with real bugs found and fixed at nearly every step — including one genuinely consequential live fix (Phase 14's same-symbol pyramiding gap, closed with the user's explicit approval) and several smaller but real findings (a MSFT revenue miscalculation, a SIC-range ordering bug, a position-sizing hazard, cross-dialect datetime bugs, a narrative-logic bug caught against the project's own well-known NVDA win, and more — see each phase's own entry above for full detail). Final state: **336 tests passing**, OANDA permanently erased and confirmed absent from every new code path, Alpaca paper-only confirmed at both the unit and integration level, every risk constant locked at its current conservative value, and every shadow-only component (Phase 10's challengers, Phase 13's governor extensions) confirmed by grep to be genuinely unwired from the live execution path.
