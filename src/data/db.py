@@ -846,6 +846,23 @@ company_fundamentals = Table(
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("ticker", String, nullable=False, index=True),
+    # period_start is NOT NULL, not nullable: an instant/balance-sheet
+    # metric (e.g. total assets) has no real duration, so its ingester sets
+    # period_start = period_end as an honest sentinel ("this period is a
+    # single point"), not a NULL placeholder. A flow metric (e.g. revenue)
+    # has both, and crucially the SAME tag/period_end can carry BOTH a
+    # single-quarter fact and a cumulative year-to-date fact (same `end`,
+    # different `start`) -- verified live against SEC's own XBRL API
+    # 2026-10-01 (NVDA's Q2 and H1 Revenues share one `end` date).
+    # period_start is part of the unique key for exactly this reason.
+    # Real bug caught by this table's own test before this ever shipped:
+    # an earlier nullable version let two genuinely duplicate rows (both
+    # with period_start=NULL) insert without tripping the unique
+    # constraint at all -- ANSI SQL treats every NULL as distinct from
+    # every other NULL in a unique index, on both SQLite and Postgres, so
+    # a nullable column in a uniqueness key silently stops being unique
+    # for exactly the rows that need it most (instant metrics).
+    Column("period_start", DateTime(timezone=True), nullable=False, index=True),
     Column("period_end", DateTime(timezone=True), nullable=False, index=True),  # fiscal period this value describes
     Column("filed_at", DateTime(timezone=True), nullable=False, index=True),  # SEC publish time -- the only point this was knowable
     Column("fiscal_period", String, nullable=False),  # e.g. "Q1-2026", "FY2025"
@@ -863,7 +880,10 @@ company_fundamentals = Table(
     # existed by then. Real bug caught by its own test before this ever
     # shipped: the original constraint (without filed_at) made a genuine
     # restatement collide with the original filing and fail to insert.
-    UniqueConstraint("ticker", "period_end", "metric", "source", "filed_at", name="uq_company_fundamental"),
+    # period_start is in the key too (see its own column comment) --
+    # verified live that a quarterly and a YTD fact for the same tag can
+    # share every other field.
+    UniqueConstraint("ticker", "period_start", "period_end", "metric", "source", "filed_at", name="uq_company_fundamental"),
 )
 
 # --- company_events: corporate actions/calendar (earnings dates, M&A,

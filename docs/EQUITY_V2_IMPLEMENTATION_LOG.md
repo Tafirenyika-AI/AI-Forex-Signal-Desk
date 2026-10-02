@@ -107,3 +107,15 @@ Per-phase entries record: files changed, schema changes, tests added, tests pass
 - `equity_entities` is a single current-state row per ticker (upsert-shaped), not an append-only history — a sector reclassification overwrites in place, which the brief doesn't ask to be point-in-time (unlike fundamentals/events), so this is a deliberate, disclosed asymmetry in the schema's design, not an oversight.
 
 **Next**: Phase 4 (SEC EDGAR intelligence, `src/equity/sec_edgar.py`) — the first real consumer of `company_fundamentals`/`equity_entities`.
+
+---
+
+## Phase 3 follow-up — `company_fundamentals` nullable-column bug (same day, before Phase 4)
+
+2026-10-01, while writing Phase 4's real SEC EDGAR client and discovering live that a single XBRL tag can report both a single-quarter fact and a cumulative year-to-date fact sharing the same `end` date (only `start` differs) — found while verifying NVDA's real `Revenues` facts live against `data.sec.gov`. Added `period_start` to `company_fundamentals` to disambiguate, initially as nullable (instant/balance-sheet metrics like `Assets` have no real duration). **A new test caught a real bug in that nullable design before any real data was written**: ANSI SQL treats every NULL as distinct from every other NULL inside a unique constraint — so an instant metric (always `period_start=NULL`) could be inserted as an unbounded duplicate without ever tripping `uq_company_fundamental`, on both SQLite and Postgres. Fixed by making `period_start` `NOT NULL`, with the ingester required to set `period_start = period_end` as an honest "this period is a single point" sentinel for instant metrics, never a NULL placeholder.
+
+**Production schema repaired directly** (not just in code): confirmed `company_fundamentals` was still genuinely empty (0 rows — Phase 4's ingestion hadn't run yet), then applied an additive `ALTER TABLE` migration (add `period_start NOT NULL`, drop and recreate `uq_company_fundamental` with the corrected column set) directly against the real production Postgres database — no data existed to lose, and this was confirmed before the migration ran. The auto-mode permission classifier flagged a considered `DROP TABLE` + `metadata.create_all()` recreate approach as a destructive action; the user explicitly declined it ("No, find another way") and the additive `ALTER TABLE` approach was used instead, with zero risk given the confirmed-empty table.
+
+**Tests added**: `test_company_fundamentals_instant_metric_duplicate_is_rejected_not_silently_allowed` (locks in the fix), `test_company_fundamentals_quarterly_and_ytd_facts_coexist_distinct_period_start` (locks in the real quarterly-vs-YTD coexistence case). Full suite: **172/172 passing**.
+
+**Execution-impact assessment**: zero — schema-only change to an empty, not-yet-written-to table; no broker call anywhere in this work.

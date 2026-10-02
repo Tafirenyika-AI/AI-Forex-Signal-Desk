@@ -78,9 +78,10 @@ def test_equity_entity_ticker_is_unique(engine):
 
 
 def test_company_fundamentals_missing_metric_is_explicit_null_not_fabricated(engine):
+    period_end = datetime(2026, 7, 31, tzinfo=timezone.utc)
     with engine.begin() as conn:
         conn.execute(insert(company_fundamentals_table).values(
-            ticker="NVDA", period_end=datetime(2026, 7, 31, tzinfo=timezone.utc),
+            ticker="NVDA", period_start=period_end, period_end=period_end,
             filed_at=datetime(2026, 8, 25, tzinfo=timezone.utc),
             fiscal_period="Q2-2026", form_type="10-Q", metric="free_cash_flow",
             value=None, unit="USD", source="sec_edgar", accession_number="0001-26-000123",
@@ -90,11 +91,34 @@ def test_company_fundamentals_missing_metric_is_explicit_null_not_fabricated(eng
 
 
 def test_company_fundamentals_same_ticker_period_metric_source_is_unique(engine):
+    period_end = datetime(2026, 7, 31, tzinfo=timezone.utc)
     kwargs = dict(
-        ticker="NVDA", period_end=datetime(2026, 7, 31, tzinfo=timezone.utc),
+        ticker="NVDA", period_start=period_end, period_end=period_end,
         filed_at=datetime(2026, 8, 25, tzinfo=timezone.utc),
         fiscal_period="Q2-2026", form_type="10-Q", metric="revenue",
         value=30000000000.0, unit="USD", source="sec_edgar",
+    )
+    with engine.begin() as conn:
+        conn.execute(insert(company_fundamentals_table).values(**kwargs))
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(insert(company_fundamentals_table).values(**kwargs))
+
+
+def test_company_fundamentals_instant_metric_duplicate_is_rejected_not_silently_allowed(engine):
+    # Real bug this test locks in: an earlier version made period_start
+    # NULLable, and an instant metric (e.g. total assets -- no real
+    # duration) always left it NULL -- ANSI SQL's "every NULL is distinct"
+    # rule meant the unique constraint silently never fired for exactly
+    # these rows, letting unbounded duplicate inserts accumulate. Fixed by
+    # requiring the ingester to set period_start = period_end (an honest
+    # sentinel, not a placeholder) for instant metrics instead of NULL.
+    period_end = datetime(2026, 7, 31, tzinfo=timezone.utc)
+    kwargs = dict(
+        ticker="NVDA", period_start=period_end, period_end=period_end,
+        filed_at=datetime(2026, 8, 25, tzinfo=timezone.utc),
+        fiscal_period="Q2-2026", form_type="10-Q", metric="Assets",
+        value=100000000000.0, unit="USD", source="sec_edgar",
     )
     with engine.begin() as conn:
         conn.execute(insert(company_fundamentals_table).values(**kwargs))
@@ -108,8 +132,9 @@ def test_company_fundamentals_a_restatement_is_a_new_row_not_an_overwrite(engine
     # filed_at/source-of-truth moment -- modeled as an additional row (both
     # distinguishable by filed_at), never an UPDATE that destroys the
     # as-originally-filed value a point-in-time backtest would have seen.
+    period_end = datetime(2026, 7, 31, tzinfo=timezone.utc)
     original = dict(
-        ticker="NVDA", period_end=datetime(2026, 7, 31, tzinfo=timezone.utc),
+        ticker="NVDA", period_start=period_end, period_end=period_end,
         filed_at=datetime(2026, 8, 25, tzinfo=timezone.utc),
         fiscal_period="Q2-2026", form_type="10-Q", metric="revenue",
         value=30000000000.0, unit="USD", source="sec_edgar",
@@ -122,6 +147,26 @@ def test_company_fundamentals_a_restatement_is_a_new_row_not_an_overwrite(engine
         rows = conn.execute(select(company_fundamentals_table)).fetchall()
     assert len(rows) == 2
     assert {r.value for r in rows} == {30000000000.0, 30050000000.0}
+
+
+def test_company_fundamentals_quarterly_and_ytd_facts_coexist_distinct_period_start(engine):
+    # Verified live against SEC's own XBRL API (2026-10-01): the SAME tag
+    # and period_end can carry both a single-quarter fact and a cumulative
+    # year-to-date fact, distinguished only by period_start.
+    quarterly = dict(
+        ticker="NVDA", period_start=datetime(2026, 4, 27, tzinfo=timezone.utc),
+        period_end=datetime(2026, 7, 26, tzinfo=timezone.utc),
+        filed_at=datetime(2026, 8, 26, tzinfo=timezone.utc),
+        fiscal_period="Q2-2027", form_type="10-Q", metric="Revenues",
+        value=96221000000.0, unit="USD", source="sec_edgar",
+    )
+    ytd = dict(quarterly, period_start=datetime(2026, 1, 26, tzinfo=timezone.utc), value=177837000000.0)
+    with engine.begin() as conn:
+        conn.execute(insert(company_fundamentals_table).values(**quarterly))
+        conn.execute(insert(company_fundamentals_table).values(**ytd))
+        rows = conn.execute(select(company_fundamentals_table)).fetchall()
+    assert len(rows) == 2
+    assert {r.value for r in rows} == {96221000000.0, 177837000000.0}
 
 
 def test_company_event_distinguishes_event_time_from_announced_at(engine):
