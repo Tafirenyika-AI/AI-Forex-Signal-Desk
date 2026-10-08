@@ -117,3 +117,31 @@ Both fixed with dedicated regression tests reproducing the exact real bug patter
 - MFE/MAE accuracy is bounded by candle granularity (bars, not ticks) — the realized-P&L clamp added above handles the one place this surfaced as a real inconsistency, but the excursion *between* entry and exit (away from the exact exit point) is still a bar-level approximation, same caveat any OHLC-derived MFE/MAE system has.
 
 **Next**: Priority 2 (part 2b) — a `rejected_signal_outcomes` table — then Priority 3 (Strategy Research Laboratory), per "go on."
+
+---
+
+## Priority 2 (part 2b) — "Rejected-signal hypothetical outcome tracking" — **DONE, by correcting a wrong gap finding**
+
+2026-10-08, continuing per "go on." The last of Priority 2's four items — and the one that changed shape once actually investigated.
+
+**The literal plan (`docs/V4_ARCHITECTURE.md` Priority 2) called for a new `rejected_signal_outcomes` table + a new scheduled job to re-price risk-rejected signals at horizon expiry.** Investigating that before building it (same "read the real code before trusting a gap claim" discipline as everything else this session) found the gap analysis itself was wrong: `src/scripts/evaluate_challengers.py`'s `_pending_champion_signals()` already selects every `trade_intents` row with `action != "NO_TRADE"` with **no status filter at all** — it re-prices `RISK_REJECTED` signals exactly the same way it re-prices approved ones, and records the result in `signal_evaluations` (`source="champion"`). **Confirmed live against production**: 8,853 of 10,778 real `RISK_REJECTED` trade_intents already have a scored `signal_evaluations` row. Building a second table and a second scheduled job would have duplicated that real, already-running pipeline rather than filled a gap.
+
+**What was actually missing**: a way to *segment* that already-computed data by risk-decision outcome/reason — the brief's real underlying ask ("directly useful for evaluating whether the risk governor is too conservative") needs a comparison, not just raw storage. Built `src/evaluation/rejected_signal_report.py`'s `rejected_signal_segmented_report()` — a read-only query joining `risk_decisions` ⋈ `trade_intents` ⋈ `signal_evaluations` (source="champion"), grouped by `(approved, reason)`, returning `n`/`hit_rate`/`mean_move_in_favor` per group. NO_TRADE decisions are naturally excluded (they never produce a champion evaluation row to join against — verified with a dedicated test, not just assumed).
+
+**Live-verified against real production data** — a genuinely interesting result: approved signals hit 43.1% (n=367); most rejection reasons sit close to or below that (confidence-below-threshold 48.4% n=4,671, kill-switch-active 45.7% n=2,569, stale-data 40.6% n=1,043) — no sign the governor is leaving obviously-good trades on the table at scale. Two smaller buckets (max-concurrent-positions 50.7% n=363, no-pyramid 54.5% n=55) actually out-hit the approved population, a real, disclosable signal worth a closer look in a future pass, not acted on here (this module is read-only research, never feeds back into live risk decisions).
+
+**Real bug found and fixed via the same live-verification pass**: the first version used `avg(CAST(hit AS FLOAT))` to average a boolean column — works fine in SQLite (booleans are integer-backed there) but Postgres outright refuses a bool→float `CAST` (`CannotCoerce`). Caught immediately when run against the real production database, not by the in-memory SQLite tests (which all passed first try and would have shipped this broken). Fixed with a portable `CASE WHEN hit THEN 1.0 ELSE 0.0 END` instead.
+
+**`docs/V4_ARCHITECTURE.md` corrected**: both the Section 14 gap-analysis row and the Priority 2 implementation-plan bullet now point at this entry instead of repeating the original, incorrect "does not exist" claim.
+
+**Files changed**: `src/evaluation/rejected_signal_report.py` (new), `tests/test_rejected_signal_report.py` (new, 3 tests), `docs/V4_ARCHITECTURE.md` (2 corrections).
+
+**Tests**: 3 new, all passing. Full suite: **421/421 passing** (418 prior + 3 new), zero regressions.
+
+**Execution-impact assessment**: zero. Pure read-only query over existing tables; no write, no broker call, no new table, no new scheduled job.
+
+**Known limitations, disclosed not hidden**:
+- The two buckets where rejected signals out-hit approved ones (max-concurrent-positions, no-pyramid) are small samples (n=363, n=55) — a real finding worth tracking over time, not grounds for changing the risk governor's own thresholds on this evidence alone.
+- `mean_move_in_favor` is an unweighted average of signed price moves, not risk-adjusted or cost-adjusted (no spread/slippage) — directionally informative, not a substitute for the real backtester's realistic accounting.
+
+**Priority 2 is now fully complete** (all 4 items — benchmarks, regime detail columns, MFE/MAE, rejected-signal segmentation). **Next**: Priority 3 (Strategy Research Laboratory) or Priority 4 (opportunity scanner), per "go on" — Priority 3 is the larger, named-strategy-family work; worth confirming scope/order before diving into a multi-week slice of new strategy code.
