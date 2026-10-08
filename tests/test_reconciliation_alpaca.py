@@ -168,6 +168,29 @@ def test_check_protective_orders_ignores_flat_positions():
     assert issues == []
 
 
+def test_check_protective_orders_held_status_counts_as_present():
+    # Real bug found live 2026-10-08 (V4 Phase 0 safety audit): this
+    # module used to receive a status="open"-filtered order list, which
+    # silently excludes a real, live stop order whose sibling leg in an
+    # OTO/OCO group is still resting (Alpaca reports ITS status as
+    # "held") -- confirmed against this account's real AAPL/MSFT short
+    # positions, both genuinely protected, both falsely reported CRITICAL
+    # "unprotected_position" every 30-minute reconciliation cycle before
+    # this fix. Now receives the full order history and filters out only
+    # genuinely terminal statuses itself.
+    all_orders = [{"symbol": "MSFT", "type": "stop", "status": "held"}]
+    issues = _check_protective_orders(None, {"MSFT": -676.0}, all_orders, NOW)
+    assert len(issues) == 1
+    assert issues[0].severity == "VERIFIED"
+
+
+def test_check_protective_orders_terminal_status_does_not_count_as_present():
+    all_orders = [{"symbol": "MSFT", "type": "stop", "status": "canceled"}]
+    issues = _check_protective_orders(None, {"MSFT": -676.0}, all_orders, NOW)
+    assert len(issues) == 1
+    assert issues[0].severity == "CRITICAL"
+
+
 # --- _check_unexplained_orders ---
 
 def test_check_unexplained_orders_flags_unrecognized_fill():
@@ -236,14 +259,12 @@ def test_reconcile_end_to_end_persists_and_reports():
         ))
 
     async def fake_request(client, method, path, **kwargs):
-        if path == "/orders" and kwargs.get("params", {}).get("status") == "open":
-            return []  # no open orders -- NVDA position below will be flagged unprotected
-        if path == "/orders":  # status=all
+        if path == "/orders":  # status=all -- the only orders fetch reconcile() makes now
             return [
                 {"id": "o1", "symbol": "NVDA", "side": "buy", "status": "filled",
                  "filled_at": "2026-09-10T18:32:27.313317Z", "filled_avg_price": "217.98",
                  "filled_qty": "652", "client_order_id": "intent-1"},
-            ]
+            ]  # no stop-type order anywhere in history -- NVDA position below will be flagged unprotected
         raise AssertionError(f"unexpected call: {method} {path}")
 
     broker._request = fake_request

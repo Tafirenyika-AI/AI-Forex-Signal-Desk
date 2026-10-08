@@ -49,6 +49,18 @@ ALPACA_DATA_HOST = "https://data.alpaca.markets"
 MAX_CONCURRENT_REQUESTS = 8
 RATE_LIMIT_RETRY_DELAY_SECONDS = 2.0
 
+# An order in any of these statuses can no longer protect a position —
+# everything else (including "held", a real live order whose sibling leg
+# in an OTO/OCO group is still resting) must still be treated as a real,
+# live, protective order. Real bug found live 2026-10-08 (V4 Phase 0
+# safety audit): querying Alpaca's own status="open" bucket silently
+# excludes "held" orders, which made both get_equity_stop_price() below
+# and src/reconciliation/alpaca.py's _check_protective_orders() falsely
+# report two genuinely protected real positions (AAPL/MSFT shorts) as
+# unprotected. Module-level and shared between both call sites so this
+# list can't drift out of sync between them.
+ALPACA_TERMINAL_ORDER_STATUSES = {"filled", "canceled", "expired", "rejected", "replaced", "stopped", "done_for_day"}
+
 # M15/H1 are all src/run_loop.py's HORIZON_CONFIGS actually uses; H4/D
 # added so the dashboard's Markets tab (free browsing at any granularity,
 # not just the trading horizons) doesn't send OANDA's raw "H4"/"D" strings
@@ -502,13 +514,36 @@ class AlpacaBroker(BrokerAdapter):
         no open position at all) — added 2026-09-22 for the risk governor's
         correlation gate (src/run_loop.py's stop-risk aggregation), which
         needs this to compute an accurate risk-at-stop, the same way
-        get_crypto_stop_price already served the D2 trailing-stop step."""
-        open_orders = await self._request(
+        get_crypto_stop_price already served the D2 trailing-stop step.
+
+        Real bug found live 2026-10-08 (V4 Phase 0 safety audit):
+        querying with status="open" silently excludes a real, live,
+        genuinely protective stop-loss order whose sibling take-profit leg
+        is still resting — Alpaca reports THAT stop leg's own status as
+        "held", not "open"/"new", confirmed directly against this
+        account's real AAPL/MSFT positions (both have real, live buy-stop
+        orders at a real stop_price, both status="held", both completely
+        invisible to the old status="open" filter). That made this
+        function return None for a genuinely protected position, which the
+        correlation gate (src/run_loop.py's compute_correlated_stop_risk)
+        then treated as float('inf') unbounded risk — a real position was
+        silently misreported as unprotected. Fixed by fetching the recent
+        order history for this symbol (status="all", newest first, capped
+        at a generous limit — a stop order, if any, is always among the
+        most recent orders for an open position) and excluding only
+        TERMINAL statuses (an order that genuinely can no longer protect
+        anything), rather than relying on Alpaca's own "open" bucket,
+        which doesn't include every live-but-contingent order."""
+        recent_orders = await self._request(
             self._trading_client, "GET", "/orders",
-            params={"status": "open", "symbols": instrument},
+            params={"status": "all", "symbols": instrument, "limit": 50, "direction": "desc"},
         )
         order = next(
-            (o for o in open_orders if o.get("type") == "stop" and o.get("symbol") == instrument),
+            (
+                o for o in recent_orders
+                if o.get("type") == "stop" and o.get("symbol") == instrument
+                and o.get("status") not in ALPACA_TERMINAL_ORDER_STATUSES
+            ),
             None,
         )
         return float(order["stop_price"]) if order else None

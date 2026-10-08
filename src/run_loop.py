@@ -457,7 +457,23 @@ def _normalized_positions(positions_raw: list[dict], broker_kind: BrokerKind, ex
     for p in positions_raw:
         if broker_kind == "alpaca":
             instrument = p["symbol"]
-            qty = float(p["qty"])
+            # Real bug found live 2026-10-08 (V4 Phase 0 safety audit):
+            # Alpaca's own `qty` field already comes pre-signed (negative
+            # for a short position) — confirmed directly against this
+            # account's real open AAPL/MSFT shorts (qty="-400"/"-383",
+            # side="short"). The old `qty if side=="long" else -qty` logic
+            # assumed `qty` was always an unsigned magnitude needing a
+            # sign applied from `side` — against a real short position
+            # that double-negates an already-negative number back to
+            # positive, making a real short position look "long"
+            # everywhere this function's output feeds: the correlation
+            # gate's exposure bucketing (src/run_loop.py's
+            # compute_exposure) AND the Phase 14 no_pyramid_same_symbol
+            # protection (compute_open_directions_by_instrument) — both
+            # were silently reading this account's real open shorts as
+            # longs. Taking abs() first removes the ambiguity regardless
+            # of which convention a future Alpaca response actually uses.
+            qty = abs(float(p["qty"]))
             net_units = qty if p.get("side") == "long" else -qty
             ref_price = float(p.get("avg_entry_price") or 0)
         elif execution_mode == "paper":

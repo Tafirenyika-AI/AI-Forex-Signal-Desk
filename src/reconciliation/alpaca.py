@@ -58,7 +58,7 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
-from src.broker.alpaca import AlpacaBroker, parse_alpaca_time
+from src.broker.alpaca import ALPACA_TERMINAL_ORDER_STATUSES, AlpacaBroker, parse_alpaca_time
 from src.broker.registry import asset_class_for
 from src.data.db import orders_fills as orders_fills_table
 from src.data.db import positions_snapshots as positions_snapshots_table
@@ -210,11 +210,22 @@ def _check_positions(
 
 
 def _check_protective_orders(
-    broker: AlpacaBroker, broker_positions: dict[str, float], open_orders: list[dict], now: datetime,
+    broker: AlpacaBroker, broker_positions: dict[str, float], all_orders: list[dict], now: datetime,
 ) -> list[ReconciliationIssue]:
+    """`all_orders` must be the FULL (status="all") order history, not a
+    status="open"-filtered fetch — real bug found live 2026-10-08 (V4
+    Phase 0 safety audit): Alpaca's own status="open" bucket excludes a
+    real, live, genuinely protective stop order whose sibling leg in an
+    OTO/OCO group is still resting (status="held"). That made this check
+    report CRITICAL "unprotected_position" for two real, genuinely
+    protected AAPL/MSFT short positions, on the 30-minute scheduled
+    reconciliation task, every single cycle. See
+    src/broker/alpaca.py's ALPACA_TERMINAL_ORDER_STATUSES docstring for
+    the shared exclusion list this now uses instead."""
     issues = []
     open_stop_symbols = {
-        o["symbol"] for o in open_orders if o.get("type") in ("stop", "stop_limit")
+        o["symbol"] for o in all_orders
+        if o.get("type") in ("stop", "stop_limit") and o.get("status") not in ALPACA_TERMINAL_ORDER_STATUSES
     }
     for symbol, qty in broker_positions.items():
         if abs(qty) < 1e-9:
@@ -316,9 +327,6 @@ async def reconcile(engine: Engine, broker: AlpacaBroker, user_id: int) -> Recon
     live_positions = await broker.positions()
     broker_positions = {p["symbol"]: float(p.get("qty") or 0) for p in live_positions}
 
-    open_orders = await broker._request(
-        broker._trading_client, "GET", "/orders", params={"status": "open", "limit": 500},
-    )
     all_orders = await broker._request(
         broker._trading_client, "GET", "/orders",
         params={"status": "all", "limit": 500, "direction": "asc"},
@@ -349,7 +357,7 @@ async def reconcile(engine: Engine, broker: AlpacaBroker, user_id: int) -> Recon
 
     issues: list[ReconciliationIssue] = []
     issues += _check_positions(broker_positions, fills_by_symbol, now)
-    issues += _check_protective_orders(broker, broker_positions, open_orders, now)
+    issues += _check_protective_orders(broker, broker_positions, all_orders, now)
     issues += _check_unexplained_orders(filled_orders, known_order_coids, now)
     issues += _check_pnl(
         nav=account.nav, deposited=STARTING_DEPOSIT.get("alpaca", 0.0),
