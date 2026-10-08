@@ -268,6 +268,8 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
                             "than discarding.",
         validation_criteria="The initial expansion direction (first few bars after regime_low_volatility ends) "
                              "is directionally predictive at a rate statistically distinguishable from 50%.",
+        status="HYPOTHESIS_TESTED",
+        implementation_ref="src/strategies/volatility_breakout.py",
     ),
     "G": StrategySpec(
         code="G", name="Earnings and Event-Driven Trading",

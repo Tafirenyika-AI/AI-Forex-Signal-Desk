@@ -25,7 +25,7 @@ criteria.
 | C | Trend Following | Trend persists; trailing-stop captures more of it than a fixed horizon | RESEARCH_SPEC_ONLY (but its exit mechanism, the ATR-ratcheting trailing stop, is already built+backtested from earlier work) |
 | D | Opening-Range Breakout | Volume-confirmed opening-range breaks persist through the session | RESEARCH_SPEC_ONLY |
 | E | VWAP Mean Reversion | Statistically stretched price reverts to session VWAP under calm regimes | RESEARCH_SPEC_ONLY |
-| F | Volatility Breakout | Volatility compression is followed by a directionally-persistent expansion | RESEARCH_SPEC_ONLY |
+| F | Volatility Breakout | Volatility compression is followed by a directionally-persistent expansion | **HYPOTHESIS_TESTED** (real result below) |
 | G | Earnings/Event-Driven | Earnings surprises drift in the surprise's direction (PEAD) | RESEARCH_SPEC_ONLY |
 | H | Sector Rotation | Regime-conditioned sector relative strength predicts continued rotation | RESEARCH_SPEC_ONLY |
 | I | Statistical Pairs Trading | A cointegrated pair's stretched spread reverts | RESEARCH_SPEC_ONLY |
@@ -156,16 +156,75 @@ next real step for this strategy (not done in this pass) is a full
 `BACKTESTED` pass through `src/backtest/engine.py` with realistic costs —
 only after that would `SHADOW` status even be considered.
 
-## 4. Known limitations, disclosed not hidden
+## 4. Strategy F — Real Hypothesis Test Results (live, 2026-10-08)
 
-- 7 of 10 strategy families are `RESEARCH_SPEC_ONLY` — specs exist, nothing
+Ran `src/strategies/volatility_breakout.py`'s `evaluate_volatility_breakout_hypothesis()`
+against the same 3 instruments' real H4 history (`compression_window_bars=20`,
+`expansion_vol_threshold=0.5`, `holding_bars=5`, `regime_lookback=250`) —
+reusing `src/models/regime.py`'s `regime_low_volatility`/`vol_percentile`
+wholesale, exactly as the strategy's own spec intends (no new feature work
+needed). The event detector only counts the FIRST bar of each real
+expansion episode (a rising-edge filter), not every bar while vol_percentile
+stays elevated — see the "Real bugs found" note below for why that
+distinction mattered.
+
+| Instrument | n | Hit rate | z-score | Mean move-in-favor |
+|---|---|---|---|---|
+| NVDA | 15 | 46.7% | -0.26 | -0.00011 |
+| AAPL | 8 | **87.5%** | **2.12** | 0.02381 |
+| MSFT | 16 | 56.3% | 0.50 | 0.00590 |
+
+**Real, disclosed finding**: NVDA and MSFT show no significant signal
+(`|z| < 1`). AAPL's result (z=2.12) crosses the conventional significance
+threshold, but **n=8 is a genuinely small sample** — a single flipped
+outcome would materially change the hit rate, and 8 real compression/
+expansion episodes over this instrument's available history is not enough
+to treat this as a validated edge. Reported honestly as a `HYPOTHESIS_TESTED`
+signal worth tracking as more history accumulates, not as a finding ready
+for `BACKTESTED` status.
+
+**Real bugs found and fixed while building this (not live-impacting — this
+strategy was never run against real data until both were fixed)**:
+1. The event detector's first version fired on every bar where vol_percentile
+   stayed elevated after a compression ended, not just the first one — a
+   deliberately-reversing synthetic fixture (compression → spike up →
+   sustained decline) still produced a 100% "hit rate," because most
+   "events" were really later continuation bars correlating with
+   themselves rather than the genuine initial breakout. Fixed with a
+   rising-edge filter (`qualifies & ~qualifies.shift(1)`).
+2. That fix's own `~qualifies.shift(1)` silently did nothing at first:
+   `shift()` on a bool-dtype pandas Series introduces a leading NaN,
+   upcasting the whole Series to **object** dtype holding Python
+   `True`/`False`/`NaN` — and `~` on an object-dtype Series of Python bools
+   performs **integer bitwise-not** (`~True == -2`, `~False == -1`), not
+   logical negation. Fixed by forcing `.astype(bool)` after `.fillna(False)`.
+3. The same NaN-to-bool family struck a third time in `was_compressed_recently`:
+   the very first row (no prior history at all) produced a NaN from
+   `rolling().max()`, and `NaN.astype(bool)` evaluates `True` — incorrectly
+   treating "no history yet" as "yes, recently compressed." Fixed by adding
+   `.fillna(False)` before that `.astype(bool)` too.
+
+All three were caught by directly fabricated, deterministic test fixtures
+(`tests/test_volatility_breakout.py`) with a known-by-construction correct
+answer — none were caught by eyeballing the code, and none were caught by
+an initial end-to-end OHLC-series fixture attempt (abandoned after it
+produced bizarre, hard-to-interpret results from interacting with
+`classify_regime()`'s own long trailing-percentile window — see the
+module's own docstring for why the test was restructured to target the
+pure event-detection core directly instead).
+
+## 5. Known limitations, disclosed not hidden
+
+- 6 of 10 strategy families are `RESEARCH_SPEC_ONLY` — specs exist, nothing
   has been run against real data yet. This is deliberate, incremental
   scoping (confirmed with the user before starting Priority 3's largest
   item), not an oversight.
 - Only 3 of the brief's 8 named equity candidates have any backfilled
   candle history at all (see Section 1 above) — a real gap for Priority 4.
-- Strategy A's own result above covers equities only — Strategy J
+- Strategy A/F's own results above cover equities only — Strategy J
   explicitly calls for a SEPARATE crypto validation, not done in this pass.
+- Strategy F's AAPL result (z=2.12, n=8) is too small a sample to trust —
+  disclosed explicitly in Section 4 above, not quietly treated as a win.
 - No strategy in this registry has been wired into `src/decision/fusion.py`
   or any live decision path — that integration is explicitly Priority 5's
   job (the adaptive meta-model/strategy selector), not this one.

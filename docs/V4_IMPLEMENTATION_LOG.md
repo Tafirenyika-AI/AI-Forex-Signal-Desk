@@ -176,3 +176,31 @@ Both fixed with dedicated regression tests reproducing the exact real bug patter
 - No strategy here is wired into `src/decision/fusion.py` or any live decision path — explicitly Priority 5's job.
 
 **Next**: continue Priority 3 (additional strategy hypothesis tests, e.g. Strategy F which is fully data-ready already) or move to Priority 4 (opportunity scanner) — per "go on," picking whichever next slice stays similarly scoped and verifiable.
+
+---
+
+## Priority 3 (part 2) — Strategy F (Volatility Breakout) hypothesis test — **DONE**
+
+2026-10-08, continuing per "go on." `src/strategies/volatility_breakout.py` tests whether a compressed-volatility episode (`src/models/regime.py`'s `regime_low_volatility`, from V4 Priority 2) is followed by an expansion whose INITIAL direction persists — reusing `compute_features()`/`classify_regime()` wholesale, exactly as the strategy's own registry spec says it should need no new data.
+
+**Split design, deliberate**: the module separates a pure, directly-testable `_evaluate_core(classified_df, ...)` from a thin `evaluate_volatility_breakout_hypothesis(engine, ...)` real-data wrapper. `classify_regime()`'s trailing percentiles are measured against a long (250-bar) window, which made a hand-built end-to-end OHLC fixture fragile and indirect — an initial attempt produced bizarre, hard-to-interpret results purely from interacting with that window, abandoned in favor of testing the event-detection math directly against a fabricated classified-style DataFrame.
+
+**Three real bugs found and fixed via that fabricated-fixture testing, before this ever touched real data**:
+1. The event detector initially fired on every bar while `vol_percentile` stayed elevated after a compression ended, not just the first — a deliberately-reversing synthetic fixture (compression → spike up → sustained decline) still produced a 100% "hit rate," since most "events" were really later continuation bars correlating with themselves. Fixed with a rising-edge filter.
+2. That fix silently did nothing at first: `shift()` on a bool-dtype pandas Series introduces a leading NaN, upcasting the whole Series to **object** dtype holding Python `True`/`False`/`NaN` — and `~` on an object-dtype Series of Python bools performs integer bitwise-not (`~True == -2`), not logical negation. Fixed with an explicit `.astype(bool)` after `.fillna(False)`.
+3. The same NaN-to-bool family struck a third time: the very first row (no prior history) produces NaN from `rolling().max()`, and `NaN.astype(bool)` evaluates `True` — incorrectly treating "no history yet" as "yes, recently compressed." Fixed the same way.
+
+**Live-verified against real production H4 history** for NVDA/AAPL/MSFT (`compression_window_bars=20`, `holding_bars=5`, `regime_lookback=250`): NVDA n=15 hit_rate=46.7% (not significant), MSFT n=16 hit_rate=56.3% (not significant), AAPL n=8 hit_rate=87.5% z=2.12 — crosses the conventional significance threshold but n=8 is too small a sample to trust (disclosed explicitly in `docs/V4_STRATEGY_RESEARCH.md`, not quietly treated as a win).
+
+**Files changed**: `src/strategies/volatility_breakout.py` (new), `src/strategies/registry.py` (Strategy F status → `HYPOTHESIS_TESTED`), `docs/V4_STRATEGY_RESEARCH.md` (+Section 4, Strategy F results), `tests/test_volatility_breakout.py` (new, 4 tests).
+
+**Tests**: 4 new, all passing. Full suite: **433/433 passing** (429 prior + 4 new), zero regressions.
+
+**Execution-impact assessment**: zero. No broker call; reads only `candles`, writes nothing.
+
+**Known limitations, disclosed not hidden**:
+- AAPL's n=8 result is explicitly flagged as too small to trust, not a validated edge.
+- Crypto (Strategy J's own separate-validation requirement) not tested here, same as Strategy A.
+- 6 of 10 strategy families remain `RESEARCH_SPEC_ONLY`.
+
+**Next**: continuing per "go on" — either another Priority 3 strategy hypothesis test or Priority 4 (opportunity scanner), whichever stays similarly scoped and verifiable.
