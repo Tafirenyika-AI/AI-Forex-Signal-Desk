@@ -376,3 +376,54 @@ Both fixed with dedicated regression tests reproducing the exact real bug patter
 - The 80/20 development/holdout split and the specific 84d/30d config are both inherited from the original analysis, not independently re-derived — a fully rigorous walk-forward approach (re-fitting/re-selecting the lookback on development alone, then testing on holdout) is more thorough than this single fixed-config split and remains future work.
 
 **Next**: per "go on" — applying the same holdout discipline to C/F/H, the remaining Priority 6 items (partial fills, corporate actions, session-awareness), or Priority 7 (dashboard restructure).
+
+---
+
+## Priority 3 (parts 4-9) — Strategies J, B, E, I, G, D — **PRIORITY 3 NOW FULLY COMPLETE**
+
+2026-10-08. User said "continue until you finish." Full detail, tables, and real findings for each strategy are in `docs/V4_STRATEGY_RESEARCH.md` (Sections 7, 8, 9, 10, 12, 13 respectively) — summarized here, not duplicated in full.
+
+- **Strategy J (crypto, `00902dc`)**: pure reuse of A/F against real BTC/USD, ETH/USD. The equity-validated 84d/30d momentum config actively REVERSES sign on crypto (BTC z=-3.76, ETH z=-6.03). A promising-looking 28d/7d config failed its own holdout immediately (BTC dev z=3.77→holdout z=-1.65; ETH dev z=0.43→holdout z=6.35 — the two disagreeing this sharply means noise).
+- **Strategy B (`10ea176`)**: new `src/strategies/cross_sectional_momentum.py` — classic Jegadeesh-Titman top-minus-bottom spread (distinct from H's SPY-relative construction). A 60-bar/20-bar spread looked significant full-sample and even stronger in development, but the genuine holdout collapsed to t≈0.12 (see the correction note below — these exact numbers were later corrected).
+- **Strategy E (`06e2703`)**: new `src/strategies/vwap_reversion.py` — reuses `approx_vwap()` (Equity V2 Phase 8, already existed; corrected this registry's own earlier wrong claim that no VWAP feature existed). MSFT's standout full-sample signal was inconclusive once holdout-split (too few holdout events).
+- **Strategy I (`b72251d`)**: new `src/strategies/pairs_trading.py` — genuinely new cointegration-testing infrastructure (added `statsmodels` dependency), real Augmented Engle-Granger test. Tested 6 real pairs — NONE shows genuine cointegration. Found a real, dangerous false-positive trap: GLD/IAU's and AAPL/NVDA's mechanical spread-reversion tests alone look spectacular despite failing the cointegration prerequisite — exactly why that gate exists.
+- **Strategy G (`a4f437a`)**: new `src/strategies/earnings_drift.py` — found `company_events` confirmed completely empty (a known, already-disclosed Equity V2 Phase 3 gap) and `equity_news`'s "EARNINGS" tag only matches multi-ticker roundups, not per-ticker events. Used `company_fundamentals.filed_at` instead. **Real bug found and fixed**: a Q4/fiscal-year-end fact shares its `period_end` with both the true single-quarter EPS AND SEC's own cumulative annual fact — mixed them in an early version (MSFT showing "17.95" EPS, its actual annual figure). Fixed via an 80-100-day duration filter. Real result: n=6-7 per instrument, too small to reach significance either way.
+- **Strategy D (`23ea0f6`)**: new `src/strategies/opening_range_breakout.py` — M15's 60-day depth turned out genuinely sufficient (~60-63 real trading days), correcting the registry's own earlier wrong assumption that it wasn't. **Real, striking, consistent finding**: all 6 instrument/config combinations tested are NEGATIVE (opposite of the hypothesis); AAPL and MSFT reach significance. Holdout attempt: samples too tiny (n=0-3) to confirm or deny.
+
+**Priority 3 is now fully complete — all 10 of 10 named strategy families are `HYPOTHESIS_TESTED`.** The headline finding across the whole registry: almost nothing survives genuine scrutiny (holdout testing, real backtests) once actually checked — not how many strategies "work," but how few do. No strategy has cleared a real, holdout-robust bar for trading.
+
+**Tests**: 8+4+8+5+4+5 = 34 new across the 6 strategies. Full suite reached 486/486 by the end of this stretch.
+
+---
+
+## Priority 6 (third slice) — Corporate-action detection, and a real data-corruption finding — **DONE**
+
+2026-10-08, continuing per "go on." Covers the brief's Section 14/15 "corporate actions" item — detection, not full historical back-adjustment (which would need a licensed corporate-actions calendar this project doesn't have).
+
+**Real risk identified before any data was inspected**: `src/broker/alpaca.py` never passes Alpaca's `adjustment` parameter on bar requests, so all backfilled history is RAW (split/dividend-unadjusted) by default — a future stock split in any tracked instrument would silently corrupt every technical/regime/momentum feature computed across that boundary, with no guard anywhere in this codebase.
+
+**`src/data/corporate_actions.py`**: `detect_likely_stock_splits()` — flags a bar only when BOTH a large single-bar move (>15%) occurs AND the ratio matches a common real split ratio (2-for-1, 10-for-1, 1-for-2, etc.) within tolerance — a large move alone (a real rally/selloff) is never enough to avoid false positives. Found and fixed a real labeling bug in its own reference table before shipping: an early version had "2-for-1" mapped to the wrong ratio (2.0 instead of 0.5 — a 2-for-1 split means price HALVES, not doubles) — caught by the module's own test, not live.
+
+**Ran it against every currently-backfilled real instrument — found a real, previously-undetected, currently-uncorrected data corruption**: 5 Select Sector SPDR ETFs (XLB, XLE, XLK, XLU, XLY) all flagged a 2-for-1 split candidate on the exact same real date (2025-12-05). **Verified via live web search this is a real, documented corporate action**: State Street executed a genuine 2-for-1 split of these exact 5 ETFs effective 2025-12-04/05 (confirmed via SEC EDGAR filings and contemporaneous reporting) — not a data artifact.
+
+**User explicitly asked how to proceed given this was a real production data-integrity finding; chose to apply the real, confirmed correction.** `src/scripts/fix_spdr_2025_split.py`: back-adjusts all pre-2025-12-05 candle rows for these 5 tickers (×0.5 price, ×2 volume) across every granularity. Idempotent — checks the real ratio between the last pre-cutoff and first post-cutoff close before adjusting, skips tickers already corrected. **Ran live against production**: adjusted 1,003/975/1,018/1,005/1,001 rows for XLB/XLE/XLK/XLU/XLY respectively. **Re-ran the detector afterward and confirmed zero remaining split candidates anywhere**, and confirmed the migration is safely idempotent (re-running it reports "already adjusted, skipping" for all 5).
+
+**Re-checked every Priority 3 strategy that used this ETF universe, since their numbers were computed on the corrupted data**:
+- Strategy H (sector rotation): t went from -7.55 to **-2.63** — still real and significant, but the original number overstated the effect size (`docs/V4_STRATEGY_RESEARCH.md` Section 6 corrected).
+- Strategy B (cross-sectional momentum): full-sample t from 4.01→2.69, development t from 4.59→3.11; holdout t unchanged at 0.12 (the holdout window falls entirely after the split, so was never affected) — conclusion (fails holdout) unchanged, magnitudes corrected (Section 8 corrected).
+- Strategy I (pairs trading): XLK/QQQ's cointegration p-value went from 0.549→0.313 (still fails) and its mechanical-reversion z from 1.46→2.24 (now crosses the significance threshold, making it an even stronger illustration of the false-positive trap the section describes) (Section 10 corrected).
+
+In every case the HEADLINE CONCLUSION was unchanged — this was a correction to magnitude/precision, not a reversal of any finding.
+
+**Files changed**: `src/data/corporate_actions.py` (new), `src/scripts/fix_spdr_2025_split.py` (new), `tests/test_corporate_actions.py` (new, 5 tests), `tests/test_fix_spdr_2025_split.py` (new, 4 tests), `docs/V4_STRATEGY_RESEARCH.md` (3 correction notes, Sections 6/8/10).
+
+**Tests**: 9 new, all passing. Full suite: **495/495 passing** (486 prior + 9 new), zero regressions.
+
+**Execution-impact assessment**: the detector itself is read-only. The migration is a real, one-time write to historical `candles` rows — confirmed additive/corrective (not destructive: no row deleted, only 5 specific tickers' pre-split OHLCV values rescaled using a real, cited, verified split ratio), run only after explicit user approval given it modifies production data other parts of the system also depend on.
+
+**Known limitations, disclosed not hidden**:
+- This is DETECTION + a targeted, confirmed correction for one specific real event — not a general, automatic corporate-actions ingestion pipeline. A different future split would need the same manual verify-then-correct process (or a dedicated licensed feed, not pursued here).
+- The detector isn't wired into any scheduled job or dashboard view yet — it was run ad hoc for this investigation. Wiring it into a periodic data-quality check is a natural next increment, not done in this pass.
+- Only candles were corrected; any other table that independently stored raw prices for these 5 tickers (none identified, but not exhaustively audited) could still carry the same artifact.
+
+**Next**: per "go on" — remaining Priority 6 items (partial fills, session-awareness, holdout-check the still-unchecked strategies C/F/H), or Priority 7 (dashboard restructure).

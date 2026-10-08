@@ -283,32 +283,44 @@ against real H4 history for SPY + the 11 SPDR sector ETFs
 `regime_lookback=250`), gated on the broad market (SPY itself) not being
 in a `SHOCK` regime:
 
-**Result: n=3,366, mean forward relative return = -0.76%, t = -7.55.**
+**Result (CORRECTED 2026-10-08, see note below): n=3,366, mean forward
+relative return = -0.145%, t = -2.63.**
 
-**Real, disclosed finding — the data says the OPPOSITE of the hypothesis,
-strongly.** Sector ETFs in the top tier of TRAILING relative strength vs.
-SPY tend to UNDERPERFORM SPY over the following 20-bar window, not
-continue outperforming — a mean-reversion signature, not the rotation-
-persistence the strategy's own hypothesis predicted, and the effect is
-large and overwhelmingly significant (t = -7.55 on n=3,366). This is
-exactly the kind of result the brief's own Section 6 instruction exists
-for ("these are research candidates, not assumed profitable methods") —
-reported honestly as a real negative/contrarian finding, not discarded or
-reframed as a win. A genuinely interesting follow-up (not pursued in this
-pass): this result structurally resembles Strategy E's own hypothesis
-(mean reversion) rather than H's — worth a dedicated look at whether
-"fade the top-tier sector, don't follow it" has real validation potential,
-which would be a different strategy from the one actually specified here.
+**Real, disclosed finding — the data says the OPPOSITE of the hypothesis.**
+Sector ETFs in the top tier of TRAILING relative strength vs. SPY tend to
+UNDERPERFORM SPY over the following 20-bar window, not continue
+outperforming — a mean-reversion signature, not the rotation-persistence
+the strategy's own hypothesis predicted, and the effect is real and
+significant (t = -2.63 on n=3,366). This is exactly the kind of result the
+brief's own Section 6 instruction exists for ("these are research
+candidates, not assumed profitable methods") — reported honestly as a
+real negative/contrarian finding, not discarded or reframed as a win. A
+genuinely interesting follow-up (not pursued in this pass): this result
+structurally resembles Strategy E's own hypothesis (mean reversion)
+rather than H's — worth a dedicated look at whether "fade the top-tier
+sector, don't follow it" has real validation potential, which would be a
+different strategy from the one actually specified here.
 
-**Real data gap found**: only 9 of 11 sector ETFs have any backfilled H4
-history — **XLE and XLF have zero rows** in this project's own database
-despite being in `BENCHMARK_INSTRUMENTS` (confirmed, 2026-10-08). Checked
-live against Alpaca directly: real H1 data exists for both right now
-(XLE closed 65.07, XLF closed 53.615), so this is a genuine backfill gap
-for these two specific symbols, not a "no data exists" situation — not
-investigated further in this pass (root-causing exactly why the backfill
-script skipped these two is separate work from the strategy research
-itself).
+**⚠ Correction (2026-10-08, found via Priority 6's corporate-action
+detector)**: this result was originally reported as t = -7.55, mean =
+-0.76%. 5 of the 11 sector ETFs (XLB, XLE, XLK, XLU, XLY) had real,
+unadjusted price data straddling a genuine 2-for-1 split (State Street,
+2025-12-04/05) — a fake ~50% single-day "crash" in 5 of 11 cross-section
+members, inflating the apparent effect size. Fixed via
+`src/scripts/fix_spdr_2025_split.py` (a real, confirmed back-adjustment,
+not a guess — see Priority 6's own implementation-log entry for the
+citation). **The corrected effect is smaller but still real and
+significant** — this is a correction to magnitude, not a reversal of the
+conclusion.
+
+**Real data gap found (at the time) — since resolved**: only 9 of 11
+sector ETFs had any backfilled H4 history when this was originally run —
+XLE and XLF had zero rows despite being in `BENCHMARK_INSTRUMENTS`.
+Checked live against Alpaca directly at the time: real H1 data existed
+for both, so this was a genuine backfill gap, not a "no data exists"
+situation. **Resolved during Priority 4** (running the real backfill
+script live materialized both) — the corrected result above now covers
+all 11 of 11 sector ETFs (`n_etfs_covered=11`).
 
 ## 7. Strategy J — Real Hypothesis Test Results, WITH holdout (live, 2026-10-08)
 
@@ -382,20 +394,20 @@ Classic top-tier-minus-bottom-tier long-short spread
 
 | Lookback | Holding | n | Mean spread | t-statistic |
 |---|---|---|---|---|
-| 5 bars | 5 bars | 1,152 | -0.00062 | -0.99 |
-| 20 bars | 20 bars | 1,122 | 0.00162 | 1.23 |
-| 60 bars | 20 bars | 1,082 | 0.00461 | **4.01** |
+| 5 bars | 5 bars | 1,152 | -0.00009 | -0.15 |
+| 20 bars | 20 bars | 1,122 | -0.00111 | -1.05 |
+| 60 bars | 20 bars | 1,082 | 0.00294 | **2.69** |
 
 **Applying this session's holdout discipline immediately, before reporting
 the 60/20 result as a finding**:
 
 | | n | Mean spread | t-statistic |
 |---|---|---|---|
-| Development (earliest 80%) | 869 | 0.00565 | **4.59** |
-| Holdout (final 20%, untouched) | 213 | 0.00035 | **0.12** |
+| Development (earliest 80%) | 869 | 0.00357 | **3.11** |
+| Holdout (final 20%, untouched) | 213 | 0.00035 | 0.12 |
 
-**Does not replicate.** The apparently strong in-sample result (t=4.59 in
-development, t=4.01 full-sample) collapses to essentially zero (t=0.12) on
+**Does not replicate.** The apparently strong in-sample result (t=3.11 in
+development, t=2.69 full-sample) collapses to essentially zero (t=0.12) on
 genuinely held-out data — the third time this exact pattern has now shown
 up this session (Strategy A's 84d/30d result, Strategy J's 28d/7d crypto
 result, now this). **This recurring pattern is itself the most important
@@ -405,6 +417,16 @@ based tests find apparent significance that does not survive genuine
 out-of-sample validation — a strong argument for treating every full-
 sample result in this document as provisional until holdout-checked, not
 just the ones that happened to get checked first.
+
+**⚠ Correction (2026-10-08, found via Priority 6's corporate-action
+detector)**: the numbers above were originally reported as full-sample
+t=4.01, development t=4.59 (holdout t=0.12 was already correct, since the
+holdout window falls entirely after the split). 5 of the 13 cross-section
+instruments (XLK, XLE, plus 3 more SPDR ETFs) had unadjusted data
+straddling a real 2-for-1 split (see Strategy H's own correction note,
+Section 6) — fixed via `src/scripts/fix_spdr_2025_split.py`. The
+conclusion is UNCHANGED (still fails the holdout), but the development/
+full-sample magnitudes were overstated and are corrected above.
 
 ## 9. Strategy E — Real Hypothesis Test Results, WITH holdout (live, 2026-10-08)
 
@@ -462,7 +484,7 @@ equities):
 | XLE / USO | — (USO H4 gap, see Priority 4) | n=0 |
 | SPY / QQQ | 0.178 | 210 / 51.4% / 0.41 |
 | AAPL / MSFT | 0.897 | 171 / 44.4% / -1.45 |
-| XLK / QQQ | 0.549 | 152 / 55.9% / 1.46 |
+| XLK / QQQ | 0.313 | 156 / 59.0% / **2.24** |
 | AAPL / NVDA | 0.416 | 130 / 72.3% / **5.09** |
 | MSFT / NVDA | 0.630 | 179 / 52.0% / 0.52 |
 
@@ -472,17 +494,27 @@ near-identical gold exposure, fails at p=0.669).
 
 **A real, important, dangerous false-positive trap found along the way**:
 GLD/IAU's MECHANICAL reversion test alone looks spectacular (z=7.01,
-98.1% hit rate) and AAPL/NVDA's looks very strong too (z=5.09) — but
-BOTH pairs fail the formal cointegration prerequisite. This is exactly
-why the registry's own validation criteria require the cointegration
-test to pass FIRST, not a reversion-test result alone: a rolling z-score
-of ANY two price series' difference can look like a strong "reversion"
-signal purely from the normalization itself, with no genuine statistical
-link underneath it. Trading GLD/IAU or AAPL/NVDA on the mechanical signal
+98.1% hit rate), AAPL/NVDA's looks very strong too (z=5.09), and even
+XLK/QQQ now crosses the conventional threshold (z=2.24) — but ALL THREE
+pairs fail the formal cointegration prerequisite. This is exactly why the
+registry's own validation criteria require the cointegration test to pass
+FIRST, not a reversion-test result alone: a rolling z-score of ANY two
+price series' difference can look like a strong "reversion" signal purely
+from the normalization itself, with no genuine statistical link
+underneath it. Trading any of these three pairs on the mechanical signal
 alone, without the cointegration gate, would have been a textbook
 spurious-regression mistake — precisely the failure mode Gatev, Goetzmann
 & Rouwenhorst's own methodology (and this registry's own validation
 criteria) exists to prevent.
+
+**⚠ Correction (2026-10-08, found via Priority 6's corporate-action
+detector)**: XLK/QQQ's numbers were originally reported as p=0.549,
+n=152, hit_rate=55.9%, z=1.46 — XLK had unadjusted data straddling a real
+2-for-1 split (see Strategy H's correction note, Section 6), fixed via
+`src/scripts/fix_spdr_2025_split.py`. The conclusion is UNCHANGED (still
+fails cointegration), but the corrected numbers are a stronger, not
+weaker, illustration of the same false-positive trap this section warns
+about.
 
 **Conclusion for Strategy I**: no validated pair exists in this project's
 current real, backfilled universe. This is a genuine, useful null result,
