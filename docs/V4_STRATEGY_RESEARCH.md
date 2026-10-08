@@ -22,12 +22,12 @@ criteria.
 |---|---|---|---|
 | A | Time-Series Momentum | Own trailing return predicts own forward return's sign | **HYPOTHESIS_TESTED** (real result below) |
 | B | Cross-Sectional Momentum | Relative-strength ranking predicts relative forward performance | RESEARCH_SPEC_ONLY |
-| C | Trend Following | Trend persists; trailing-stop captures more of it than a fixed horizon | RESEARCH_SPEC_ONLY (but its exit mechanism, the ATR-ratcheting trailing stop, is already built+backtested from earlier work) |
+| C | Trend Following | Trend persists; trailing-stop captures more of it than a fixed horizon | **HYPOTHESIS_TESTED** (real result below — important caveat: tested with a fixed holding period, not the strategy's own actual trailing-stop exit) |
 | D | Opening-Range Breakout | Volume-confirmed opening-range breaks persist through the session | RESEARCH_SPEC_ONLY |
 | E | VWAP Mean Reversion | Statistically stretched price reverts to session VWAP under calm regimes | RESEARCH_SPEC_ONLY |
 | F | Volatility Breakout | Volatility compression is followed by a directionally-persistent expansion | **HYPOTHESIS_TESTED** (real result below) |
 | G | Earnings/Event-Driven | Earnings surprises drift in the surprise's direction (PEAD) | RESEARCH_SPEC_ONLY |
-| H | Sector Rotation | Regime-conditioned sector relative strength predicts continued rotation | RESEARCH_SPEC_ONLY |
+| H | Sector Rotation | Regime-conditioned sector relative strength predicts continued rotation | **HYPOTHESIS_TESTED** (real result below — the data says the OPPOSITE of the hypothesis) |
 | I | Statistical Pairs Trading | A cointegrated pair's stretched spread reverts | RESEARCH_SPEC_ONLY |
 | J | Crypto Momentum and Volatility | A/F's hypotheses, re-validated separately for 24/7 crypto | RESEARCH_SPEC_ONLY |
 
@@ -213,18 +213,98 @@ produced bizarre, hard-to-interpret results from interacting with
 module's own docstring for why the test was restructured to target the
 pure event-detection core directly instead).
 
-## 5. Known limitations, disclosed not hidden
+## 5. Strategy C — Real Hypothesis Test Results (live, 2026-10-08)
 
-- 6 of 10 strategy families are `RESEARCH_SPEC_ONLY` — specs exist, nothing
+Ran `src/strategies/trend_following.py`'s `evaluate_trend_following_hypothesis()`
+against the same 3 instruments' real H4 history, entering only on a FRESH
+transition into `TREND` (the spec's own "not merely 'currently in TREND'"
+distinction), direction from `regime_direction`, across 3 fixed holding
+periods:
+
+| Instrument | Holding (bars) | n | Hit rate | z-score | Mean move-in-favor |
+|---|---|---|---|---|---|
+| NVDA | 10 | 23 | 52.2% | 0.21 | 0.00445 |
+| NVDA | 20 | 23 | 30.4% | **-1.88** | -0.00905 |
+| NVDA | 40 | 23 | 43.5% | -0.63 | -0.02102 |
+| AAPL | 10 | 23 | 56.5% | 0.63 | -0.00347 |
+| AAPL | 20 | 23 | 56.5% | 0.63 | 0.01928 |
+| AAPL | 40 | 23 | 52.2% | 0.21 | 0.01509 |
+| MSFT | 10 | 24 | 33.3% | -1.63 | -0.00882 |
+| MSFT | 20 | 24 | 54.2% | 0.41 | -0.00658 |
+| MSFT | 40 | 24 | 45.8% | -0.41 | -0.00757 |
+
+**Real, disclosed finding — and an important interpretation caveat**: no
+combination shows a significant POSITIVE signal, and two (NVDA at 20 bars,
+MSFT at 10 bars) are mildly negative. This is **not** strong evidence that
+trend-following fails on this data — it's evidence that a **fixed-horizon**
+proxy is the wrong instrument to test it with. The strategy's own spec
+(Section 1 above) is explicit that its real exit is a trailing stop, not a
+calendar-time exit, specifically to avoid giving back gains during the
+trend's later, choppier stages — and Equity V2's own earlier Phase D1 work
+already found exactly that signature on a ratcheting ATR trailing stop
+(drawdown and payoff ratio improved in every pair tested, hit rate
+dropped, net return was mixed) applied in backtest. A real `BACKTESTED`-
+stage test of Strategy C needs the actual trailing-stop exit wired in
+(`src/execution/trailing_stop.py`), not this fixed-horizon substitute —
+explicitly flagged as follow-up work, not done in this pass.
+
+## 6. Strategy H — Real Hypothesis Test Results (live, 2026-10-08)
+
+Ran `src/strategies/sector_rotation.py`'s `evaluate_sector_rotation_hypothesis()`
+against real H4 history for SPY + the 11 SPDR sector ETFs
+(`lookback_bars=20`, `holding_bars=20`, `top_tier_fraction=1/3`,
+`regime_lookback=250`), gated on the broad market (SPY itself) not being
+in a `SHOCK` regime:
+
+**Result: n=3,366, mean forward relative return = -0.76%, t = -7.55.**
+
+**Real, disclosed finding — the data says the OPPOSITE of the hypothesis,
+strongly.** Sector ETFs in the top tier of TRAILING relative strength vs.
+SPY tend to UNDERPERFORM SPY over the following 20-bar window, not
+continue outperforming — a mean-reversion signature, not the rotation-
+persistence the strategy's own hypothesis predicted, and the effect is
+large and overwhelmingly significant (t = -7.55 on n=3,366). This is
+exactly the kind of result the brief's own Section 6 instruction exists
+for ("these are research candidates, not assumed profitable methods") —
+reported honestly as a real negative/contrarian finding, not discarded or
+reframed as a win. A genuinely interesting follow-up (not pursued in this
+pass): this result structurally resembles Strategy E's own hypothesis
+(mean reversion) rather than H's — worth a dedicated look at whether
+"fade the top-tier sector, don't follow it" has real validation potential,
+which would be a different strategy from the one actually specified here.
+
+**Real data gap found**: only 9 of 11 sector ETFs have any backfilled H4
+history — **XLE and XLF have zero rows** in this project's own database
+despite being in `BENCHMARK_INSTRUMENTS` (confirmed, 2026-10-08). Checked
+live against Alpaca directly: real H1 data exists for both right now
+(XLE closed 65.07, XLF closed 53.615), so this is a genuine backfill gap
+for these two specific symbols, not a "no data exists" situation — not
+investigated further in this pass (root-causing exactly why the backfill
+script skipped these two is separate work from the strategy research
+itself).
+
+## 7. Known limitations, disclosed not hidden
+
+- 4 of 10 strategy families are `RESEARCH_SPEC_ONLY` — specs exist, nothing
   has been run against real data yet. This is deliberate, incremental
   scoping (confirmed with the user before starting Priority 3's largest
   item), not an oversight.
 - Only 3 of the brief's 8 named equity candidates have any backfilled
   candle history at all (see Section 1 above) — a real gap for Priority 4.
-- Strategy A/F's own results above cover equities only — Strategy J
+- 2 of the 11 sector ETFs (XLE, XLF) have zero backfilled H4 history despite
+  real Alpaca data existing for both — a real, disclosed backfill gap found
+  via Strategy H's own test (Section 6 above), not fixed in this pass.
+- Strategy A/F/C/H's own results above cover equities only — Strategy J
   explicitly calls for a SEPARATE crypto validation, not done in this pass.
 - Strategy F's AAPL result (z=2.12, n=8) is too small a sample to trust —
   disclosed explicitly in Section 4 above, not quietly treated as a win.
+- Strategy C's fixed-horizon test is an acknowledged proxy, not a real test
+  of the strategy's own trailing-stop-exit design (Section 5 above) — its
+  flat/negative results should not be read as "trend-following doesn't
+  work here."
+- Strategy H's own result directly CONTRADICTS its hypothesis (Section 6) —
+  reported honestly, not discarded; the contrarian finding is itself the
+  useful output of doing real research rather than assuming an edge exists.
 - No strategy in this registry has been wired into `src/decision/fusion.py`
   or any live decision path — that integration is explicitly Priority 5's
   job (the adaptive meta-model/strategy selector), not this one.

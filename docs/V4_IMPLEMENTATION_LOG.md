@@ -204,3 +204,33 @@ Both fixed with dedicated regression tests reproducing the exact real bug patter
 - 6 of 10 strategy families remain `RESEARCH_SPEC_ONLY`.
 
 **Next**: continuing per "go on" — either another Priority 3 strategy hypothesis test or Priority 4 (opportunity scanner), whichever stays similarly scoped and verifiable.
+
+---
+
+## Priority 3 (part 3) — Strategy C (Trend Following) + Strategy H (Sector Rotation) — **DONE**
+
+2026-10-08. User explicitly chose "keep going — more quick-reuse strategies" when asked, naming C and H specifically as the next similarly-scoped (reuse-only, no new feature engineering) candidates.
+
+**Strategy C (`src/strategies/trend_following.py`)**: tests whether entering on a FRESH transition into `TREND` (not merely "currently in TREND," the spec's own distinction) and holding in `regime_direction`'s direction produces a positive forward return — fixed-horizon proxy only, not the strategy's own real trailing-stop exit. Live result against NVDA/AAPL/MSFT (holding 10/20/40 bars): **no significant positive signal anywhere**, two combinations (NVDA@20, MSFT@10) mildly negative (z=-1.88, -1.63). Documented with an explicit interpretation caveat: this strategy's own spec says its real exit is a trailing stop, not a calendar-time exit, specifically to capture a trend's later stages — Equity V2's own earlier Phase D1 work already found exactly that signature (hit rate drops, payoff ratio improves) on a real ATR-ratcheting trailing stop. The flat/negative fixed-horizon result here should NOT be read as "trend-following doesn't work" — a real `BACKTESTED`-stage test needs the actual trailing-stop exit wired in, not done in this pass.
+
+**Strategy H (`src/strategies/sector_rotation.py`)**: tests whether a sector ETF's trailing relative strength vs. SPY (top-tier of the 11 SPDR sector ETFs) predicts continued outperformance, gated on the broad market not being in `SHOCK`. **Real result: n=3,366, mean forward relative return = -0.76%, t = -7.55 — the data says the OPPOSITE of the hypothesis, strongly.** Top-tier trailing-relative-strength sectors tend to UNDERPERFORM going forward (a mean-reversion signature, not rotation-persistence). Reported honestly as a real negative/contrarian finding, not discarded — exactly the brief's own "research candidates, not assumed profitable" instruction in action. Flagged as a genuinely interesting follow-up (not pursued here): this result structurally resembles Strategy E's mean-reversion hypothesis, not H's.
+
+**Real data gap found via Strategy H's own test**: XLE and XLF have ZERO backfilled H4 rows despite being in `BENCHMARK_INSTRUMENTS` — confirmed live against Alpaca directly that real data exists for both (XLE/XLF both have current H1 bars), so this is a genuine backfill gap, not "nothing to fetch." Not root-caused or fixed in this pass (disclosed, not silently worked around).
+
+**Design note for Strategy C/H test suites**: both reuse the split-core pattern established for Strategy F (`_evaluate_core` directly testable against fabricated inputs, a thin DB-loading wrapper around it) — avoided Strategy F's earlier end-to-end-fixture pitfall from the start this time.
+
+**Real test-fixture bug found and fixed (not production code)**: Strategy C's own first test attempt used `holding_bars=10 < trend_bars=15`, so the forward-return window landed INSIDE the synthetic trend itself rather than the intended post-trend "tail" region — the persistent/reversing distinction the test meant to check never actually applied. Fixed by using a fixture where the holding window deliberately exceeds the trend length.
+
+**Files changed**: `src/strategies/trend_following.py` (new), `src/strategies/sector_rotation.py` (new), `src/strategies/registry.py` (C and H status → `HYPOTHESIS_TESTED`), `docs/V4_STRATEGY_RESEARCH.md` (+Sections 5/6, Strategy C/H results), `tests/test_trend_following.py` (new, 4 tests), `tests/test_sector_rotation.py` (new, 4 tests).
+
+**Tests**: 8 new, all passing. Full suite: **441/441 passing** (433 prior + 8 new), zero regressions.
+
+**Execution-impact assessment**: zero. No broker call in either new module; both only read `candles`.
+
+**Known limitations, disclosed not hidden**:
+- Strategy C's result is explicitly caveated as a proxy-test limitation, not a real finding about trend-following's viability.
+- Strategy H's result directly contradicts its own hypothesis — disclosed as a real, useful negative finding, not hidden or reframed.
+- 6 of 10 strategies remain `RESEARCH_SPEC_ONLY` (B, D, E, G, I, J).
+- The XLE/XLF backfill gap is disclosed, not fixed.
+
+**Next**: per "go on" — either the remaining quick-reuse evaluation (none left; B/D/E/G/I/J all need genuine new feature work first) or Priority 4 (opportunity scanner). Worth checking with the user given Priority 3's remaining items are now all the "needs new infrastructure" category, a different scope than A/C/F/H.

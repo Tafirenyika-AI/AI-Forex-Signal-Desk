@@ -167,6 +167,8 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
                             "signature here, the opposite of the naive read).",
         validation_criteria="Positive expectancy with a payoff ratio (avg win / avg loss) that compensates for a "
                              "sub-50% hit rate, consistent with Phase D1's own already-observed real pattern.",
+        status="HYPOTHESIS_TESTED",
+        implementation_ref="src/strategies/trend_following.py",
     ),
     "D": StrategySpec(
         code="D", name="Opening-Range Breakout",
@@ -344,6 +346,8 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
                             "sector basket.",
         validation_criteria="Top-tier-selected sectors outperform the equal-weight-all-sectors baseline, net of "
                              "costs, across multiple non-overlapping rotation windows.",
+        status="HYPOTHESIS_TESTED",
+        implementation_ref="src/strategies/sector_rotation.py",
     ),
     "I": StrategySpec(
         code="I", name="Statistical Pairs Trading",
