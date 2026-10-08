@@ -24,7 +24,7 @@ criteria.
 | B | Cross-Sectional Momentum | Relative-strength ranking predicts relative forward performance | **HYPOTHESIS_TESTED** (real result below — in-sample significant, FAILS a genuine holdout) |
 | C | Trend Following | Trend persists; trailing-stop captures more of it than a fixed horizon | **HYPOTHESIS_TESTED** (real result below — important caveat: tested with a fixed holding period, not the strategy's own actual trailing-stop exit) |
 | D | Opening-Range Breakout | Volume-confirmed opening-range breaks persist through the session | RESEARCH_SPEC_ONLY |
-| E | VWAP Mean Reversion | Statistically stretched price reverts to session VWAP under calm regimes | RESEARCH_SPEC_ONLY |
+| E | VWAP Mean Reversion | Statistically stretched price reverts to session VWAP under calm regimes | **HYPOTHESIS_TESTED** (real result below — suggestive full-sample, inconclusive once split) |
 | F | Volatility Breakout | Volatility compression is followed by a directionally-persistent expansion | **HYPOTHESIS_TESTED** (real result below) |
 | G | Earnings/Event-Driven | Earnings surprises drift in the surprise's direction (PEAD) | RESEARCH_SPEC_ONLY |
 | H | Sector Rotation | Regime-conditioned sector relative strength predicts continued rotation | **HYPOTHESIS_TESTED** (real result below — the data says the OPPOSITE of the hypothesis) |
@@ -402,9 +402,49 @@ out-of-sample validation — a strong argument for treating every full-
 sample result in this document as provisional until holdout-checked, not
 just the ones that happened to get checked first.
 
-## 9. Known limitations, disclosed not hidden
+## 9. Strategy E — Real Hypothesis Test Results, WITH holdout (live, 2026-10-08)
 
-- 4 of 10 strategy families (D, E, G, I) are `RESEARCH_SPEC_ONLY` — specs
+Reuses `src/features/equity_cross_market.py`'s `approx_vwap()` directly
+(Equity V2 Phase 8's own disclosed Level-I rolling-VWAP approximation) —
+no new feature was needed, correcting this registry's own earlier,
+incomplete data-requirements note (Section 1). Entry gated on `regime ==
+RANGE` only (never TREND/SHOCK/HIGH_VOLATILITY), real H1 history:
+
+| Instrument | Threshold (std) | n | Hit rate | z-score |
+|---|---|---|---|---|
+| NVDA | 1.5 | 111 | 57.7% | 1.61 |
+| NVDA | 2.0 | 24 | 66.7% | 1.63 |
+| NVDA | 2.5 | 3 | 100% | 1.73 |
+| AAPL | 1.5 | 72 | 41.7% | -1.41 |
+| AAPL | 2.0 | 21 | 47.6% | -0.22 |
+| AAPL | 2.5 | 7 | 28.6% | -1.13 |
+| MSFT | 1.5 | 73 | **65.8%** | **2.69** |
+| MSFT | 2.0 | 17 | 70.6% | 1.70 |
+| MSFT | 2.5 | 4 | 50.0% | 0.00 |
+
+**Holdout-tested MSFT's standout result (1.5 std threshold) immediately,
+before reporting it**:
+
+| | n | Hit rate | z-score |
+|---|---|---|---|
+| Development (earliest 80%) | 68 | 58.8% | 1.46 |
+| Holdout (final 20%, untouched) | 5 | 100% | 2.24 |
+
+**Inconclusive, not confirmed** — neither half independently clears
+significance on its own terms (development alone is actually weaker than
+the combined full-sample figure suggested; the holdout's apparent z=2.24
+rests on only 5 real events, far too few to trust). AAPL shows no signal
+at any threshold; NVDA is directionally suggestive but never reaches
+significance at any threshold with a usable sample size. **No instrument
+produces a robust, holdout-confirmed finding for Strategy E** — a fourth
+consistent instance of this session's recurring theme (full-sample
+figures that don't hold up once genuinely checked), though this one reads
+more as "insufficient data to tell" than the clean contradictions seen in
+A/B/J.
+
+## 10. Known limitations, disclosed not hidden
+
+- 3 of 10 strategy families (D, G, I) are `RESEARCH_SPEC_ONLY` — specs
   exist, nothing has been run against real data yet. This is deliberate,
   incremental scoping, not an oversight.
 - Of the 6 strategies now `HYPOTHESIS_TESTED` (A/B/C/F/H/J), holdout

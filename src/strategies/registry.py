@@ -227,9 +227,11 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
         invalidation_conditions="regime flips to TREND or SHOCK while the position is open — the regime "
                                  "precondition that justified the trade is no longer true.",
         expected_holding_period="Minutes to a few hours, same-session only.",
-        data_requirements="PARTIALLY MISSING: no VWAP feature currently exists anywhere in this codebase (checked "
-                           "src/features/engine.py and src/features/equity_vectorized.py — neither computes it); "
-                           "needs a new, real, volume-weighted intraday feature, not a proxy.",
+        data_requirements="CORRECTED 2026-10-08: originally flagged as missing after checking only src/features/"
+                           "engine.py and equity_vectorized.py — src/features/equity_cross_market.py's "
+                           "approx_vwap() (Equity V2 Phase 8) already computes exactly this, a disclosed Level-I "
+                           "rolling-VWAP approximation, and is now reused directly (src/strategies/"
+                           "vwap_reversion.py). No new feature was actually needed.",
         transaction_costs="High turnover per session if multiple deviation events occur; the reversion target is "
                            "often narrow enough that costs can matter more here than in trend-following.",
         failure_conditions="Reversion rate is not meaningfully different between the RANGE-gated entries and an "
@@ -238,6 +240,8 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
         validation_criteria="Reversion rate inside the regime-gated condition is both statistically better than "
                              "chance AND measurably better than an identical test with the regime gate removed — "
                              "proving the regime filter is pulling real weight, not decoration.",
+        status="HYPOTHESIS_TESTED",
+        implementation_ref="src/strategies/vwap_reversion.py",
     ),
     "F": StrategySpec(
         code="F", name="Volatility Breakout",
