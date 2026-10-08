@@ -79,8 +79,8 @@ Ordered by: (a) safety-critical first, (b) foundational/reusable-by-everything-e
 - **New**: `docs/V4_STRATEGY_RESEARCH.md` — the evidence registry itself (literature + our own backtest/shadow/paper results per strategy), populated incrementally as each strategy is built and evaluated through the EXISTING `src/backtest/equity_walk_forward.py`/`portfolio_engine.py` harness.
 - Every strategy's signal flows through the EXISTING, unmodified risk governor — never a parallel path.
 
-### Priority 4 — Opportunity scanner (Section 5)
-- **New**: `src/scanner/opportunity_scanner.py` — a thin ranking layer over Phase 9's `build_equity_feature_vector` across a configurable universe (the brief's own named candidate list as the default), with transparent per-factor scoring, not a black-box rank.
+### Priority 4 — Opportunity scanner (Section 5) — **DONE** (2026-10-08)
+- **Built**: `src/scanner/opportunity_scanner.py` — a thin ranking layer over Phase 9's `build_equity_feature_vector` across the brief's own named candidate universe, with transparent per-factor scoring (every ranking comes with human-readable reasons naming the exact feature/value/percentile), not a black-box rank. Full detail, real live results, and real gaps found in `docs/V4_IMPLEMENTATION_LOG.md`'s Priority 4 entry.
 
 ### Priority 5 — Adaptive meta-model / strategy selector upgrade (Section 10/11)
 - Extend Phase 10's `fit_meta`/`predict_meta` stacking mechanism to select *among strategies* (not just blend 4 existing components), gated the same shadow-only way until Phase 18's promotion report shows real evidence.

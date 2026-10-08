@@ -234,3 +234,34 @@ Both fixed with dedicated regression tests reproducing the exact real bug patter
 - The XLE/XLF backfill gap is disclosed, not fixed.
 
 **Next**: per "go on" — either the remaining quick-reuse evaluation (none left; B/D/E/G/I/J all need genuine new feature work first) or Priority 4 (opportunity scanner). Worth checking with the user given Priority 3's remaining items are now all the "needs new infrastructure" category, a different scope than A/C/F/H.
+
+---
+
+## Priority 4 — Intelligent Opportunity Scanner (Section 5) — **DONE**
+
+2026-10-08. User chose to switch to Priority 4 when asked, matching `docs/V4_ARCHITECTURE.md`'s own suggested design: a thin ranking layer over Equity V2 Phase 9's `build_equity_feature_vector`, no new feature computation.
+
+**`src/scanner/opportunity_scanner.py`**: ranks the brief's own named Section 5 candidate universe (8 equities, 10 ETFs, 2 crypto pairs) across 7 factors — momentum, relative strength (vs. SPY), sector strength (vs. sector ETF), trend persistence, volatility, volume behavior, VWAP deviation — each a cross-sectional percentile rank (0-1) among whichever universe members actually have that feature available, never a fabricated neutral default for a missing one. `composite_score` is a deliberately simple equal-weighted average over only the AVAILABLE factors per ticker (not a fitted/learned weighting — that's explicitly Priority 5's job, the adaptive meta-model). Supports `timeframe="intraday"` (log_return_4, intraday_volatility_percentile) vs `"swing"` (log_return_12, vol_percentile), the brief's own "distinguish intraday from swing-trading opportunities" instruction. Every ranked ticker carries a `reasons` tuple naming the exact feature, raw value, and percentile for each factor — the brief's own "provide transparent reasons for every ranking" instruction, implemented literally, not a black box.
+
+**Honestly NOT scored, disclosed in the module's own constant (`UNSCORED_FACTORS_FROM_BRIEF`)**: the brief's Section 5 list also names "Liquidity," "Bid/ask spread," and "Breakout quality" — none has a real, dedicated feature anywhere in this codebase (only `relative_volume` as a weak liquidity proxy, already scored under `volume_behavior`). Fabricating a proxy and labeling it "spread" or "breakout quality" would misrepresent what's actually being measured, so these are named as a disclosed gap rather than silently invented.
+
+**Availability checked live before scoring, per the brief's own "check each asset's availability and eligibility before use" instruction**: `scan_opportunities()` checks real candle existence for every universe member first — an instrument with zero backfilled history gets an honest `NOT_ELIGIBLE` entry, never silently dropped or scored with missing data treated as zero.
+
+**Real, disclosed data gap found AND partially fixed while building this**: running the scanner against the real universe first showed only 9 of 20 named candidates had any H4 history (the gaps already flagged in Strategy A/H's own entries — 5 missing equities, IWM/GLD/IAU/USO/XLE/XLF never fetched). Ran the existing `src/scripts/backfill_candles.py` live (additive, read/write-candles-only, no broker orders — the same script already runs on its own schedule) to materialize real data for the already-`BENCHMARK_INSTRUMENTS`-listed-but-never-fetched set: **IWM, GLD, IAU, XLE, XLF now have real backfilled H4/H1/M15 history** (confirmed via a before/after row-count check). USO's H4 chunk hit a real Alpaca rate limit (429) mid-run and will self-heal on the next scheduled run (its H1/M15 data did complete, and the scanner itself uses H1, so USO is fully eligible already). The 5 individual equities (AMD, AMZN, META, GOOGL, TSLA) remain un-backfilled — deliberately NOT added to `BENCHMARK_INSTRUMENTS` in this pass, since that's a cross-market-reference-ETF list, a different category from "individual research candidates nobody currently trades"; disclosed as a known limitation instead of silently re-scoping that list.
+
+**Live-verified against real production data**: ran `scan_opportunities()` for real, right now — 15 of 20 universe members eligible and ranked (XLE ranked #1 at 0.887, driven by strong real momentum/relative-strength/trend numbers that session), 5 honestly `NOT_ELIGIBLE`. `BTC/USD` is missing `sector_strength`/`volume_behavior`/`vwap_deviation` (crypto has no sector ETF by definition, and its cross-market feature computation didn't resolve the other two for reasons not investigated further in this pass) — disclosed via its own `missing_factors`, not silently defaulted.
+
+**Files changed**: `src/scanner/__init__.py` (new), `src/scanner/opportunity_scanner.py` (new), `tests/test_opportunity_scanner.py` (new, 4 tests), `docs/V4_ARCHITECTURE.md` (Priority 4 marked DONE).
+
+**Tests**: 4 new, all passing. Full suite: **445/445 passing** (441 prior + 4 new), zero regressions.
+
+**Execution-impact assessment**: zero for the scanner itself (pure read + in-memory ranking, no broker call, no write). The backfill run IS a real write (new `candles` rows) but is the same additive, non-execution-adjacent operation this project already runs on a schedule — confirmed by re-reading the script before running it, not assumed safe.
+
+**Known limitations, disclosed not hidden**:
+- Liquidity, bid/ask spread, and breakout quality are named by the brief but not scored (no real feature exists yet for any of them).
+- 5 of 20 named candidates remain un-backfilled (individual equities nobody currently trades) — a deliberate scope boundary, not an oversight.
+- `composite_score`'s equal weighting is deliberately simple/unlearned — Priority 5 (the adaptive meta-model) is where a real, evidence-based weighting belongs.
+- No portfolio-exposure factor is wired in yet (the brief's own "existing portfolio exposure" ranking factor) — `build_equity_feature_vector` supports an optional `portfolio_context` the caller must supply; this scanner doesn't yet read real broker positions to populate it, a natural, safe (read-only) next increment.
+- BTC/USD's 3 missing factors weren't root-caused.
+
+**Next**: per "go on" — Priority 5 (adaptive meta-model/strategy selector) is the architecture doc's own next-ordered item, or continuing to round out the scanner (portfolio-exposure wiring, crypto gap root-cause). Worth checking with the user given the pattern of confirming direction at natural milestones this session.
