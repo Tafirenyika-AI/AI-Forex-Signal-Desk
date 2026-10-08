@@ -949,6 +949,31 @@ market_context = Table(
 )
 
 
+# --- v4_activation: V4 blueprint Section 2's own LEGACY_OPEN_POSITION
+# boundary. One row per (user, broker) -- never written to a second time
+# for the same pair once set (see src/v4/legacy_position.py's
+# activate_v4(), which explicitly refuses to overwrite an existing row).
+# legacy_symbols_json is a SNAPSHOT (the set of symbols with a real open
+# position at the exact moment V4 was activated for this account), not a
+# timestamp comparison -- a real position on this system is often built
+# from several separate fills over days with no one clean "opened_at" to
+# compare against a cutoff (confirmed live during the V4 Phase 0 safety
+# audit: AAPL was 2 tranches, MSFT was 3). Once in the snapshot, a symbol
+# stays legacy-protected indefinitely, even past a full close/reopen —
+# deliberately conservative, see that module's own docstring.
+v4_activation = Table(
+    "v4_activation",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, nullable=False, index=True),
+    Column("broker", String, nullable=False),
+    Column("activated_at", DateTime(timezone=True), nullable=False),
+    Column("legacy_symbols_json", Text, nullable=False),
+    Column("set_by", String, nullable=True),  # e.g. "dashboard:<username>"
+    UniqueConstraint("user_id", "broker", name="uq_v4_activation_user_broker"),
+)
+
+
 @functools.lru_cache(maxsize=None)
 def get_engine(db_path):
     """Every DB access in this project goes through this one function (21
