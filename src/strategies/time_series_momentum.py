@@ -38,6 +38,19 @@ class MomentumHypothesisResult:
     mean_move_in_favor: float | None  # mean(direction * forward_log_return)
 
 
+@dataclass(frozen=True)
+class CurrentMomentumSignal:
+    """The live, right-now reading -- no forward return exists yet (that's
+    the future this signal is trying to anticipate), so this is NOT a
+    hypothesis-test result, just "what does the trailing window say as of
+    the latest available bar." Used by src/models/strategy_selector.py
+    (V4 Priority 5)."""
+    instrument: str
+    as_of: object | None  # pandas Timestamp of the latest bar, or None if no data
+    trailing_return: float | None
+    direction: int | None  # +1/-1, None if no real signal (zero trailing return or insufficient data)
+
+
 def _load_closes(engine: Engine, broker: str, instrument: str, granularity: str) -> pd.DataFrame:
     with engine.connect() as conn:
         rows = conn.execute(
@@ -110,3 +123,31 @@ def evaluate_momentum_hypothesis(
     mean_move_in_favor = float((direction * eligible["forward_return"]).mean())
 
     return MomentumHypothesisResult(instrument, lookback_days, holding_days, n, hit_rate, z_score, mean_move_in_favor)
+
+
+def current_momentum_signal(
+    engine: Engine, broker: str, instrument: str, granularity: str, lookback_days: int = 84,
+) -> CurrentMomentumSignal:
+    """The live reading for `instrument` as of its latest available bar,
+    using the SAME lookback (84 days) `evaluate_momentum_hypothesis` found
+    real, significant evidence for (z=2.55/3.34/6.32 across NVDA/AAPL/MSFT
+    at this exact config, docs/V4_STRATEGY_RESEARCH.md Section 3) -- the
+    default here intentionally matches the validated configuration, not an
+    arbitrary choice."""
+    closes = _load_closes(engine, broker, instrument, granularity)
+    if len(closes) < 10:
+        return CurrentMomentumSignal(instrument, None, None, None)
+
+    closes = closes.sort_values("time").reset_index(drop=True)
+    closes["log_close"] = np.log(closes["close"])
+    latest_time = closes["time"].iloc[-1]
+    lookback_time = latest_time - timedelta(days=lookback_days)
+    nearest_idx = (closes["time"] - lookback_time).abs().idxmin()
+    if nearest_idx == len(closes) - 1:
+        # The nearest bar to "lookback_days ago" IS the latest bar itself --
+        # not enough real history to measure a trailing window at all.
+        return CurrentMomentumSignal(instrument, latest_time, None, None)
+
+    trailing_return = float(closes["log_close"].iloc[-1] - closes["log_close"].iloc[nearest_idx])
+    direction = int(np.sign(trailing_return)) if trailing_return != 0 else None
+    return CurrentMomentumSignal(instrument, latest_time, trailing_return, direction)

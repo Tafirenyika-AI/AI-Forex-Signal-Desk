@@ -82,8 +82,8 @@ Ordered by: (a) safety-critical first, (b) foundational/reusable-by-everything-e
 ### Priority 4 — Opportunity scanner (Section 5) — **DONE** (2026-10-08)
 - **Built**: `src/scanner/opportunity_scanner.py` — a thin ranking layer over Phase 9's `build_equity_feature_vector` across the brief's own named candidate universe, with transparent per-factor scoring (every ranking comes with human-readable reasons naming the exact feature/value/percentile), not a black-box rank. Full detail, real live results, and real gaps found in `docs/V4_IMPLEMENTATION_LOG.md`'s Priority 4 entry.
 
-### Priority 5 — Adaptive meta-model / strategy selector upgrade (Section 10/11)
-- Extend Phase 10's `fit_meta`/`predict_meta` stacking mechanism to select *among strategies* (not just blend 4 existing components), gated the same shadow-only way until Phase 18's promotion report shows real evidence.
+### Priority 5 — Adaptive meta-model / strategy selector upgrade (Section 10/11) — **DONE** (first slice, 2026-10-08)
+- **Built**: `src/models/strategy_selector.py` — selects AMONG strategies (not Phase 10's `fit_meta`/`predict_meta` component-blending, a different mechanism for a different job), gated by REAL evidence: only strategies with a recorded, statistically significant finding (docs/V4_STRATEGY_RESEARCH.md) are eligible at all — currently just Strategy A, since C/F/H's own tests came back null/too-small/contradicted. Full detail and live results in `docs/V4_IMPLEMENTATION_LOG.md`'s Priority 5 entry. Extending `fit_meta`/`predict_meta` itself to blend ACROSS multiple eligible strategies remains future work once more than one strategy clears the evidence bar.
 
 ### Priority 6 — Portfolio backtesting extensions (Section 14/15)
 - Extend `src/backtest/portfolio_engine.py`: partial fills, corporate-action awareness, explicit session/24-7 handling, short-margin constraints, named Sharpe/Sortino/profit-factor/turnover fields, a true held-out final test window never touched during strategy development.

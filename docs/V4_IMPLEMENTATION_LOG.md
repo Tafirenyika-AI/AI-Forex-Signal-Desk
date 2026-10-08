@@ -265,3 +265,35 @@ Both fixed with dedicated regression tests reproducing the exact real bug patter
 - BTC/USD's 3 missing factors weren't root-caused.
 
 **Next**: per "go on" — Priority 5 (adaptive meta-model/strategy selector) is the architecture doc's own next-ordered item, or continuing to round out the scanner (portfolio-exposure wiring, crypto gap root-cause). Worth checking with the user given the pattern of confirming direction at natural milestones this session.
+
+---
+
+## Priority 5 (first slice) — Adaptive Meta-Model / Strategy Selector — **DONE**
+
+2026-10-08. User chose to continue to Priority 5 when asked. A genuine strategy SELECTOR, not Phase 10's existing `fit_meta`/`predict_meta` component-blending stacker — a different mechanism for a different job, per `docs/V4_ARCHITECTURE.md`'s own gap-analysis distinction ("V4 wants real learned strategy SELECTION, which strategy, not just how to blend scores").
+
+**`src/models/strategy_selector.py`**: `select_strategy(engine, instrument, as_of)` → `StrategySelection` with the brief's own required Section 10 output fields (candidate_symbol, action, strategy_selected, timeframe, estimated_net_advantage, confidence, supporting_evidence, risk_assessment, model_version).
+
+**"Do not use arbitrary confidence scores as proof of profitability" — honored structurally, not just by policy**: `ELIGIBLE_STRATEGIES = ("A",)` is a hard gate. Strategy A cleared z>2.5 across all 3 tested instruments at its validated 84-day config (Priority 3 part 1); Strategy C showed no significant signal; Strategy F's one significant result (AAPL, n=8) was already flagged too small to trust; Strategy H's result actively CONTRADICTED its own hypothesis. None of C/F/H is eligible for selection — not down-weighted, excluded outright — until real new evidence changes that. An uninstrumented or unvalidated instrument (anything other than NVDA/AAPL/MSFT, or any instrument lacking the strategies that back them) returns `NO_TRADE` with an explicit "selecting here would be exactly the 'arbitrary confidence' the brief warns against" explanation, rather than guessing.
+
+**"NO_TRADE must be a normal and acceptable decision"**: the default, most common outcome by construction — verified live below.
+
+**New live-signal capability added to Strategy A's own module** (`src/strategies/time_series_momentum.py`'s `current_momentum_signal()`): the hypothesis-test function (`evaluate_momentum_hypothesis`) answers "was this historically true," a backward-looking research question; this new function answers "what does the trailing window say RIGHT NOW," reusing the same `_load_closes` data path, defaulting to the exact 84-day lookback the real evidence was found at (not an arbitrary different choice).
+
+**"The meta-model must not override the independent risk governor"**: every `StrategySelection` carries an explicit `risk_assessment` string stating it has not passed through the risk governor and is shadow-only; the module makes no broker call, writes to no table, and is not wired into `run_loop.py`'s live cycle in this pass.
+
+**Live-verified against real production data right now**: NVDA/AAPL/MSFT all currently show real BUY signals (current 84-day trailing returns +11.1%/+2.7%/+29.2% respectively — all genuinely positive, matching each instrument's own validated direction), each selection correctly citing its own instrument-specific historical hit_rate/mean_move_in_favor. QQQ and TSLA correctly return `NO_TRADE` (QQQ has real candle history but was never one of Strategy A's 3 validated instruments; TSLA has no history at all) — confirming the evidence gate works as designed, not just in theory.
+
+**Files changed**: `src/strategies/time_series_momentum.py` (+`CurrentMomentumSignal`, `current_momentum_signal`), `src/models/strategy_selector.py` (new), `docs/V4_ARCHITECTURE.md` (Priority 5 marked DONE, first slice), `tests/test_time_series_momentum.py` (+3 tests), `tests/test_strategy_selector.py` (new, 4 tests).
+
+**Tests**: 7 new, all passing. Full suite: **452/452 passing** (445 prior + 7 new), zero regressions.
+
+**Execution-impact assessment**: zero. No broker call anywhere in either module; `select_strategy()` only reads `candles`, writes nothing, and is called by nothing in the live `run_loop.py` cycle.
+
+**Known limitations, disclosed not hidden**:
+- Only 1 of 10 strategies is currently eligible for selection (by design — real evidence is the gate, not strategy count).
+- `estimated_net_advantage`/`confidence` are the strategy's own HISTORICAL validation numbers (a fixed lookup table keyed by instrument), not live-recalibrated probabilities — explicitly disclosed in every selection's own `supporting_evidence` text, not silently presented as more certain than they are.
+- No portfolio-exposure, news/event-risk, or liquidity input is wired into the selection decision yet (the brief's own Section 10 input list names these) — this first slice covers the strategy-gating mechanism itself; richer inputs are a natural next increment once more than one strategy is eligible to weigh them against.
+- Not wired into `run_loop.py`'s live cycle or any dashboard view — a separate, explicit decision point, same posture as every other V4 component this session.
+
+**Next**: per "go on" — extending `fit_meta`/`predict_meta` to blend across multiple eligible strategies (once more than one clears the evidence bar), wiring richer Section 10 inputs (portfolio exposure, news risk), or moving to Priority 6+ (portfolio backtesting extensions, dashboard restructure). Worth checking with the user given each represents a different scope.

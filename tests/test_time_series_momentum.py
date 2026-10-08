@@ -23,7 +23,7 @@ from sqlalchemy import create_engine, insert
 
 from src.data.db import candles as candles_table
 from src.data.db import metadata
-from src.strategies.time_series_momentum import evaluate_momentum_hypothesis
+from src.strategies.time_series_momentum import current_momentum_signal, evaluate_momentum_hypothesis
 
 START = datetime(2020, 1, 1, tzinfo=timezone.utc)
 
@@ -118,3 +118,27 @@ def test_noise_floor_filters_out_small_trailing_moves(engine):
     )
     assert strict.n < loose.n
     assert strict.n > 0
+
+
+def test_current_signal_reflects_a_real_uptrend_at_the_latest_bar(engine):
+    closes = [100.0 * (1.001 ** i) for i in range(120)]  # steady real uptrend
+    _seed_daily_closes(engine, closes)
+    signal = current_momentum_signal(engine, "alpaca", "TEST", "D", lookback_days=84)
+    assert signal.direction == 1
+    assert signal.trailing_return > 0
+    assert signal.as_of is not None
+
+
+def test_current_signal_reflects_a_real_downtrend_at_the_latest_bar(engine):
+    closes = [100.0 * (0.999 ** i) for i in range(120)]
+    _seed_daily_closes(engine, closes)
+    signal = current_momentum_signal(engine, "alpaca", "TEST", "D", lookback_days=84)
+    assert signal.direction == -1
+    assert signal.trailing_return < 0
+
+
+def test_current_signal_is_honest_none_with_too_little_history(engine):
+    _seed_daily_closes(engine, [100.0, 100.5, 101.0])
+    signal = current_momentum_signal(engine, "alpaca", "TEST", "D", lookback_days=84)
+    assert signal.direction is None
+    assert signal.trailing_return is None
