@@ -101,14 +101,12 @@ def _evaluate_core(
     return SectorRotationResult(n, n_etfs, mean_forward, t_stat)
 
 
-def evaluate_sector_rotation_hypothesis(
-    engine: Engine, broker: str, granularity: str,
-    lookback_bars: int = 20, holding_bars: int = 20, top_tier_fraction: float = 1 / 3,
-    regime_lookback: int = 250,
-) -> SectorRotationResult:
+def _build_trailing_forward_not_shock(
+    engine: Engine, broker: str, granularity: str, lookback_bars: int, holding_bars: int, regime_lookback: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, int] | None:
     spy_close = _load_closes(engine, broker, "SPY", granularity)
     if spy_close is None or len(spy_close) < regime_lookback + max(lookback_bars, holding_bars):
-        return SectorRotationResult(0, 0, None, None)
+        return None
 
     sector_closes: dict[str, pd.Series] = {}
     for etf in SECTOR_ETFS:
@@ -116,7 +114,7 @@ def evaluate_sector_rotation_hypothesis(
         if s is not None and len(s) >= lookback_bars + holding_bars:
             sector_closes[etf] = s
     if len(sector_closes) < 3:  # need a real cross-section to rank, not just 1-2 ETFs
-        return SectorRotationResult(0, len(sector_closes), None, None)
+        return None
 
     # Broad-market regime, from SPY's own OHLC -- reuse real H4 bars
     # (open/high/low/close) rather than fabricating them from close alone.
@@ -144,7 +142,7 @@ def evaluate_sector_rotation_hypothesis(
         common_index = common_index.intersection(s.index)
     common_index = common_index.sort_values()
     if len(common_index) < lookback_bars + holding_bars + 1:
-        return SectorRotationResult(0, len(sector_closes), None, None)
+        return None
 
     spy_aligned = spy_close.reindex(common_index)
     spy_trailing_ret = spy_aligned.pct_change(lookback_bars)
@@ -161,5 +159,41 @@ def evaluate_sector_rotation_hypothesis(
 
     trailing_df = pd.DataFrame(relative_trailing)
     forward_df = pd.DataFrame(relative_forward)
+    return trailing_df, forward_df, not_shock, len(sector_closes)
 
-    return _evaluate_core(trailing_df, forward_df, not_shock, top_tier_fraction)
+
+def evaluate_sector_rotation_hypothesis(
+    engine: Engine, broker: str, granularity: str,
+    lookback_bars: int = 20, holding_bars: int = 20, top_tier_fraction: float = 1 / 3,
+    regime_lookback: int = 250,
+) -> SectorRotationResult:
+    built = _build_trailing_forward_not_shock(engine, broker, granularity, lookback_bars, holding_bars, regime_lookback)
+    if built is None:
+        return SectorRotationResult(0, 0, None, None)
+    trailing_df, forward_df, not_shock, n_covered = built
+    result = _evaluate_core(trailing_df, forward_df, not_shock, top_tier_fraction)
+    return SectorRotationResult(result.n, n_covered, result.mean_forward_relative_return, result.t_statistic)
+
+
+def evaluate_sector_rotation_with_holdout(
+    engine: Engine, broker: str, granularity: str,
+    lookback_bars: int = 20, holding_bars: int = 20, top_tier_fraction: float = 1 / 3,
+    regime_lookback: int = 250, holdout_fraction: float = 0.2,
+) -> dict[str, SectorRotationResult]:
+    """V4 Priority 6 discipline, applied to close a disclosed gap (Strategy
+    H's own CONTRADICTING result was never holdout-checked). Same
+    chronological, never-shuffled split convention as every other
+    strategy's own holdout wrapper."""
+    built = _build_trailing_forward_not_shock(engine, broker, granularity, lookback_bars, holding_bars, regime_lookback)
+    if built is None:
+        empty = SectorRotationResult(0, 0, None, None)
+        return {"development": empty, "holdout": empty}
+    trailing_df, forward_df, not_shock, n_covered = built
+
+    split_idx = int(len(trailing_df) * (1 - holdout_fraction))
+    dev = _evaluate_core(trailing_df.iloc[:split_idx], forward_df.iloc[:split_idx], not_shock, top_tier_fraction)
+    hold = _evaluate_core(trailing_df.iloc[split_idx:], forward_df.iloc[split_idx:], not_shock, top_tier_fraction)
+    return {
+        "development": SectorRotationResult(dev.n, n_covered, dev.mean_forward_relative_return, dev.t_statistic),
+        "holdout": SectorRotationResult(hold.n, n_covered, hold.mean_forward_relative_return, hold.t_statistic),
+    }

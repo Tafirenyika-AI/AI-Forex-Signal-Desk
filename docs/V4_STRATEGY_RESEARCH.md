@@ -240,6 +240,17 @@ produced bizarre, hard-to-interpret results from interacting with
 module's own docstring for why the test was restructured to target the
 pure event-detection core directly instead).
 
+**Holdout check (2026-10-08, closing a disclosed gap — this result was
+never holdout-tested in the original pass)**: all 8 of AAPL's real
+qualifying compression/expansion episodes fall within the earliest 80% of
+its history — the development slice reproduces the exact same z=2.12,
+and **the holdout slice has ZERO qualifying events** (`n=0`). This isn't a
+contradiction the way Strategy A/B/J's holdout checks were — it's a
+harder, more basic limit: there isn't enough real history for this
+specific event type to even attempt an out-of-sample check. The original
+"too small a sample to trust" caveat stands, now for an even more
+fundamental reason than before.
+
 ## 5. Strategy C — Real Hypothesis Test Results (live, 2026-10-08)
 
 Ran `src/strategies/trend_following.py`'s `evaluate_trend_following_hypothesis()`
@@ -274,6 +285,21 @@ dropped, net return was mixed) applied in backtest. A real `BACKTESTED`-
 stage test of Strategy C needs the actual trailing-stop exit wired in
 (`src/execution/trailing_stop.py`), not this fixed-horizon substitute —
 explicitly flagged as follow-up work, not done in this pass.
+
+**Holdout check (2026-10-08, closing a disclosed gap)**: ran the 20-bar
+holding config (the one with the clearest full-sample signal, NVDA
+z=-1.88) through a genuine chronological split:
+
+| Instrument | Development n / z | Holdout n / z |
+|---|---|---|
+| NVDA | 18 / -0.94 | 5 / **-2.24** |
+| AAPL | 19 / -0.23 | 3 / 1.73 |
+| MSFT | 19 / 0.69 | 5 / -0.45 |
+
+No instrument shows a consistent, holdout-confirmed signal in either
+direction — consistent with (not contradicting) the fixed-horizon-proxy
+caveat above. Holdout sample sizes (n=3-5) are too small to add anything
+beyond what the already-disclosed limitation already covers.
 
 ## 6. Strategy H — Real Hypothesis Test Results (live, 2026-10-08)
 
@@ -321,6 +347,28 @@ for both, so this was a genuine backfill gap, not a "no data exists"
 situation. **Resolved during Priority 4** (running the real backfill
 script live materialized both) — the corrected result above now covers
 all 11 of 11 sector ETFs (`n_etfs_covered=11`).
+
+**Holdout check (2026-10-08, closing a disclosed gap) — the contradicting
+finding itself does NOT fully replicate either**:
+
+| | n | Mean forward relative return | t-statistic |
+|---|---|---|---|
+| Development (earliest 80%) | 2,607 | -0.164% | **-2.61** |
+| Holdout (final 20%, untouched) | 639 | +0.140% | 0.96 |
+
+Development alone matches the corrected full-sample finding closely
+(t=-2.61 vs. -2.63) — expected, since development is 80% of the same
+sample. But the holdout doesn't just fail to confirm it: the sign
+FLIPS (a small, non-significant POSITIVE mean instead of negative). This
+is the same pattern seen everywhere else holdout-checked this session
+(A, B, J) — a real, significant-looking full-sample/development result
+that a genuine out-of-sample slice does not support. Strategy H's own
+"the hypothesis is contradicted" finding should itself now be read as
+"contradicted in-sample/development, unconfirmed out-of-sample" — not
+weaker evidence for the ORIGINAL rotation-persistence hypothesis, just
+one more data point that this whole class of simple rank-based tests
+doesn't produce stable, replicable signals on this project's current
+~2 years of real history.
 
 ## 7. Strategy J — Real Hypothesis Test Results, WITH holdout (live, 2026-10-08)
 
@@ -624,21 +672,22 @@ change, same situation as Strategy G.
   one has a real result against real data, not just a spec. None has
   reached `BACKTESTED` status (full cost/sizing/stop simulation) or
   beyond.
-- Holdout testing has only been applied to A/B/D/J so far — and in every
-  one of those 4 cases, the apparent full-sample finding did NOT survive
-  intact (only Strategy A's AAPL result held up; B and J did not
-  replicate at all; D's holdout samples were too tiny to confirm OR deny
-  its consistently-negative full-sample signal). C showed no signal even
-  full-sample; E's one standout result was inconclusive once split; F's
-  one significant result (AAPL, n=8) and H's contradicting result have
-  NOT yet been holdout-checked and could have the same fragility; G's
-  sample sizes (n=6-7) were too small to reach significance either way;
-  I found no cointegrated pair at all, so there is nothing left to
-  holdout-check for it in this universe. **The honest overall state of
-  this registry today: no strategy has cleared a real, holdout-robust bar
-  for trading** — a complete, real, first-pass validation of all 10 named
-  strategy families, with the central finding being how FEW of them hold
-  up under genuine scrutiny, not how many "work."
+- **Holdout testing has now been applied to A/B/C/D/F/H/J** (7 of 10) —
+  and in every case where a real full-sample finding existed, it did NOT
+  survive intact: only Strategy A's AAPL result held up; B and J did not
+  replicate at all; H's own "contradicting" finding flipped sign on
+  holdout (from significantly negative to a small, non-significant
+  positive); D's and F's holdout samples were too tiny to confirm OR deny
+  (F's holdout had literally zero qualifying events). C showed no signal
+  even full-sample, confirmed again on holdout. E's one standout result
+  was inconclusive once split; G's sample sizes (n=6-7) were too small to
+  reach significance either way; I found no cointegrated pair at all, so
+  there is nothing left to holdout-check for it in this universe. **The
+  honest overall state of this registry today: no strategy has cleared a
+  real, holdout-robust bar for trading** — a complete, real, first-pass
+  validation of all 10 named strategy families, with the central finding
+  being how FEW of them hold up under genuine scrutiny, not how many
+  "work."
 - Only 3 of the brief's 8 named equity candidates have any backfilled
   candle history at all (see Section 1 above) — a real gap for Priority 4.
 - 2 of the 11 sector ETFs (XLE, XLF) have zero backfilled H4 history despite

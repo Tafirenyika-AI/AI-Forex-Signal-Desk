@@ -91,15 +91,46 @@ def _evaluate_core(classified: pd.DataFrame, holding_bars: int) -> tuple[int, fl
     return n, hit_rate, z_score, mean_move_in_favor
 
 
+def _build_classified(engine: Engine, broker: str, instrument: str, granularity: str, regime_lookback: int) -> pd.DataFrame | None:
+    candles_df = _load_candles(engine, broker, instrument, granularity)
+    if len(candles_df) < regime_lookback:
+        return None
+    featured = compute_features(candles_df)
+    return classify_regime(featured, lookback=regime_lookback).reset_index(drop=True)
+
+
 def evaluate_trend_following_hypothesis(
     engine: Engine, broker: str, instrument: str, granularity: str,
     holding_bars: int = 10, regime_lookback: int = 250,
 ) -> TrendFollowingResult:
-    candles_df = _load_candles(engine, broker, instrument, granularity)
-    if len(candles_df) < regime_lookback + holding_bars:
+    classified = _build_classified(engine, broker, instrument, granularity, regime_lookback)
+    if classified is None or len(classified) < holding_bars:
         return TrendFollowingResult(instrument, holding_bars, 0, None, None, None)
-
-    featured = compute_features(candles_df)
-    classified = classify_regime(featured, lookback=regime_lookback)
     n, hit_rate, z_score, mean_move_in_favor = _evaluate_core(classified, holding_bars)
     return TrendFollowingResult(instrument, holding_bars, n, hit_rate, z_score, mean_move_in_favor)
+
+
+def evaluate_trend_following_with_holdout(
+    engine: Engine, broker: str, instrument: str, granularity: str,
+    holding_bars: int = 10, regime_lookback: int = 250, holdout_fraction: float = 0.2,
+) -> dict[str, TrendFollowingResult]:
+    """V4 Priority 6 discipline, applied to close a disclosed gap (Strategy
+    C was the one strategy never holdout-checked in the original Priority
+    3 pass). Same chronological, never-shuffled split convention as every
+    other strategy's own holdout wrapper. classify_regime() already ran
+    over the FULL continuous history before this split — each row's label
+    only ever depends on bars <= that row (causal by construction), so
+    splitting the already-classified frame by row position is valid, not
+    a truncated re-classification."""
+    classified = _build_classified(engine, broker, instrument, granularity, regime_lookback)
+    if classified is None or len(classified) < holding_bars:
+        empty = TrendFollowingResult(instrument, holding_bars, 0, None, None, None)
+        return {"development": empty, "holdout": empty}
+
+    split_idx = int(len(classified) * (1 - holdout_fraction))
+    dev_n, dev_hr, dev_z, dev_mm = _evaluate_core(classified.iloc[:split_idx].reset_index(drop=True), holding_bars)
+    hold_n, hold_hr, hold_z, hold_mm = _evaluate_core(classified.iloc[split_idx:].reset_index(drop=True), holding_bars)
+    return {
+        "development": TrendFollowingResult(instrument, holding_bars, dev_n, dev_hr, dev_z, dev_mm),
+        "holdout": TrendFollowingResult(instrument, holding_bars, hold_n, hold_hr, hold_z, hold_mm),
+    }

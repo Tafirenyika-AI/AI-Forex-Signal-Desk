@@ -133,20 +133,52 @@ def _evaluate_core(
     return n, hit_rate, z_score, mean_move_in_favor
 
 
+def _build_classified(engine: Engine, broker: str, instrument: str, granularity: str, regime_lookback: int) -> pd.DataFrame | None:
+    candles_df = _load_candles(engine, broker, instrument, granularity)
+    if len(candles_df) < regime_lookback:
+        return None
+    featured = compute_features(candles_df)
+    return classify_regime(featured, lookback=regime_lookback).reset_index(drop=True)
+
+
 def evaluate_volatility_breakout_hypothesis(
     engine: Engine, broker: str, instrument: str, granularity: str,
     compression_window_bars: int = 20, expansion_vol_threshold: float = 0.5,
     holding_bars: int = 5, regime_lookback: int = 250,
 ) -> VolatilityBreakoutResult:
-    candles_df = _load_candles(engine, broker, instrument, granularity)
-    if len(candles_df) < regime_lookback + compression_window_bars + holding_bars:
+    classified = _build_classified(engine, broker, instrument, granularity, regime_lookback)
+    if classified is None or len(classified) < compression_window_bars + holding_bars:
         return VolatilityBreakoutResult(instrument, compression_window_bars, holding_bars, 0, None, None, None)
-
-    featured = compute_features(candles_df)
-    classified = classify_regime(featured, lookback=regime_lookback)
     n, hit_rate, z_score, mean_move_in_favor = _evaluate_core(
         classified, compression_window_bars, expansion_vol_threshold, holding_bars,
     )
     return VolatilityBreakoutResult(
         instrument, compression_window_bars, holding_bars, n, hit_rate, z_score, mean_move_in_favor,
     )
+
+
+def evaluate_volatility_breakout_with_holdout(
+    engine: Engine, broker: str, instrument: str, granularity: str,
+    compression_window_bars: int = 20, expansion_vol_threshold: float = 0.5,
+    holding_bars: int = 5, regime_lookback: int = 250, holdout_fraction: float = 0.2,
+) -> dict[str, VolatilityBreakoutResult]:
+    """V4 Priority 6 discipline, applied to close a disclosed gap (Strategy
+    F's one significant result, AAPL n=8, was never holdout-checked).
+    Same chronological, never-shuffled split convention as every other
+    strategy's own holdout wrapper."""
+    classified = _build_classified(engine, broker, instrument, granularity, regime_lookback)
+    if classified is None or len(classified) < compression_window_bars + holding_bars:
+        empty = VolatilityBreakoutResult(instrument, compression_window_bars, holding_bars, 0, None, None, None)
+        return {"development": empty, "holdout": empty}
+
+    split_idx = int(len(classified) * (1 - holdout_fraction))
+    dev = _evaluate_core(
+        classified.iloc[:split_idx].reset_index(drop=True), compression_window_bars, expansion_vol_threshold, holding_bars,
+    )
+    hold = _evaluate_core(
+        classified.iloc[split_idx:].reset_index(drop=True), compression_window_bars, expansion_vol_threshold, holding_bars,
+    )
+    return {
+        "development": VolatilityBreakoutResult(instrument, compression_window_bars, holding_bars, *dev),
+        "holdout": VolatilityBreakoutResult(instrument, compression_window_bars, holding_bars, *hold),
+    }

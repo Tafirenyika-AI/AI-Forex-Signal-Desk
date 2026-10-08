@@ -427,3 +427,31 @@ In every case the HEADLINE CONCLUSION was unchanged — this was a correction to
 - Only candles were corrected; any other table that independently stored raw prices for these 5 tickers (none identified, but not exhaustively audited) could still carry the same artifact.
 
 **Next**: per "go on" — remaining Priority 6 items (partial fills, session-awareness, holdout-check the still-unchecked strategies C/F/H), or Priority 7 (dashboard restructure).
+
+---
+
+## Priority 6 (fourth slice) — Holdout-checking the remaining strategies (C, F, H)
+
+2026-10-08, continuing per "go on." Closes the disclosed gap noted in every prior Priority 3/6 entry: C, F, and H were the last 3 of the 10 strategies never holdout-tested.
+
+Added `evaluate_trend_following_with_holdout()`, `evaluate_volatility_breakout_with_holdout()`, and `evaluate_sector_rotation_with_holdout()` — each a light refactor (pulling the existing candle-loading/classification logic into a reusable `_build_*` helper, re-confirmed against each module's full pre-existing test suite before anything new was added) plus the same chronological, never-shuffled split convention every other holdout wrapper this session already uses.
+
+**Strategy C**: already null full-sample; holdout confirms no instrument shows a real signal in either half (sample sizes n=3-5 in the holdout portions, too small to add new information beyond the existing fixed-horizon-proxy caveat).
+
+**Strategy F**: AAPL's one significant result (n=8 full-sample) turns out to have **zero holdout events at all** — not just a small holdout sample, a genuinely empty one. Development alone reproduces the exact full-sample z=2.12 (all 8 events fall in the earliest 80%). A harder limit than "too small to trust" — there isn't enough history to even attempt the check.
+
+**Strategy H — the most important of the three**: development alone (t=-2.61) closely matches the corrected full-sample finding (t=-2.63), as expected. But **the holdout's sign flips** — a small, non-significant POSITIVE mean (+0.14%, t=0.96) instead of the development/full-sample's significant negative. This is the same pattern as A/B/J: a real, significant-looking in-sample result that a genuine out-of-sample slice does not support. Strategy H's own "the hypothesis is contradicted" finding should now be read as "contradicted in-sample, unconfirmed out-of-sample," not as weaker-but-still-real evidence against rotation-persistence.
+
+**`docs/V4_STRATEGY_RESEARCH.md` updated**: holdout tables and findings added to Sections 4 (F), 5 (C), and 6 (H); the final Known Limitations summary updated — holdout testing has now been applied to 7 of 10 strategies (A/B/C/D/F/H/J), with every single one that had a real full-sample finding failing to fully survive it.
+
+**Files changed**: `src/strategies/trend_following.py`, `src/strategies/volatility_breakout.py`, `src/strategies/sector_rotation.py` (all 3: new `_build_*` helper + holdout wrapper), `docs/V4_STRATEGY_RESEARCH.md`, `tests/test_remaining_holdout_wrappers.py` (new, 6 tests).
+
+**Tests**: 6 new, plus all 12 pre-existing tests across the 3 refactored modules re-confirmed passing. Full suite: **501/501 passing** (495 prior + 6 new), zero regressions.
+
+**Execution-impact assessment**: zero — read-only research functions, no broker call, no write.
+
+**Known limitations, disclosed not hidden**:
+- Only Strategy E and G remain without a holdout check — E's own result was already found inconclusive by splitting it a different way (development/holdout on its own deviation events), and G's sample sizes were already too small full-sample to need a holdout check to know that.
+- The recurring "fails holdout" pattern is now so consistent (6 of 7 checked strategies) that it's reasonable to treat it as a property of this project's current ~2 years of real history and simple rank/sign-based test methodology in general, not a coincidence specific to any one strategy.
+
+**Next**: per "go on" — the remaining Priority 6 items (partial fills, session-awareness, short-margin constraints), Priority 7 (dashboard restructure), or Priority 8 (TradingView, explicitly lowest priority).
