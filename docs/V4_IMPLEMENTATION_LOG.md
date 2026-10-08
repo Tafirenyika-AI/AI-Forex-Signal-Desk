@@ -90,3 +90,30 @@ Both fixed with dedicated regression tests reproducing the exact real bug patter
 - `regime_probability`'s formula is a disclosed heuristic (percentile-margin distance), not a calibrated/fitted probability — matches the architecture doc's own framing ("the percentile values already computed are a natural, cheap source for this"), not a claim of statistical rigor.
 
 **Next**: Priority 2 (part 2) — MFE/MAE columns on `trade_outcomes` + a `rejected_signal_outcomes` table — then Priority 3 (Strategy Research Laboratory), per "go on."
+
+---
+
+## Priority 2 (part 2a) — MFE/MAE tracking on `trade_outcomes` — **DONE**
+
+2026-10-08, continuing per "go on." Third of Priority 2's four items (docs/V4_ARCHITECTURE.md Section 14 gap).
+
+**Schema**: `mfe_usd`/`mae_usd` nullable `Float` columns added to the EXISTING `trade_outcomes` table — a genuinely different operation from every other additive schema change this session, since `metadata.create_all()` only creates missing *tables*, never adds columns to a table that already exists. New one-off migration `src/scripts/migrate_v4_mfe_mae.py` (`ADD COLUMN IF NOT EXISTS`, same idempotent idiom as `migrate_p0_02_kill_switch.py`) — **run live against the real production Postgres database** and confirmed present.
+
+**`src/outcomes/excursion.py`** (new): `compute_mfe_mae()` — pure function, no broker call — reads real stored `candles` rows (M15 preferred, falling back to H1 then H4 for older trades past M15's 60-day retention) between a trade's `opened_at`/`closed_at`, and derives the best/worst direction-adjusted USD excursion. `backfill_mfe_mae()` fills every existing `trade_outcomes` row still missing these columns, idempotently (only ever touches NULL rows).
+
+**Real bug found and fixed via live verification against production, not by inspection**: ran the new function against 5 real closed Alpaca trades before trusting it, and found a real MSFT SELL whose realized P&L (-$569.40) came out WORSE than the "worst" MAE the function had just computed purely from stored candles (-$560.63) — the actual fill price landed outside the OHLC bar range covering that window (a genuine candle-coverage/bar-boundary gap, not a math error). Fixed by adding `exit_price` as a required input and clamping both MFE and MAE to never read better/worse than the trade's own known, certain realized outcome — re-verified against the same 5 real trades afterward, all now satisfy `mae <= realized_pl_usd <= mfe`. Added a dedicated regression test reproducing the exact scenario.
+
+**Live-verified end to end**: ran the real backfill against production — **23 of 26 real `trade_outcomes` rows filled**, 3 skipped honestly (missing `entry_price` or `opened_at`, the known pre-existing gap — see `project_entry_price_null_fix` memory). Confirmed via direct query afterward.
+
+**Files changed**: `src/data/db.py` (+2 columns), `src/scripts/migrate_v4_mfe_mae.py` (new), `src/outcomes/excursion.py` (new), `tests/test_v4_excursion.py` (new, 9 tests).
+
+**Tests**: 9 new, all passing. Full suite: **418/418 passing** (409 prior + 9 new), zero regressions. The dashboard smoke test (`tests/test_dashboard_smoke.py`), which connects to the real production DB, briefly failed between adding the Python column definitions and running the live migration — exactly the signal that this isn't a `create_all()`-safe change; resolved by running the migration before any further work.
+
+**Execution-impact assessment**: zero. No broker call anywhere in `excursion.py`; it only reads `candles` and writes `mfe_usd`/`mae_usd` on existing `trade_outcomes` rows — never touches `orders_fills`, `trade_intents`, or any execution-adjacent table.
+
+**Known limitations, disclosed not hidden**:
+- 3 real rows remain unfilled (no `entry_price`/`opened_at`) — by design, not a bug; this module doesn't fabricate a value it can't honestly compute.
+- The backfill is a manual, one-off script run (`src/outcomes/excursion.py`'s `backfill_mfe_mae()`), not yet wired into the live scheduled outcome-sync task — new trades closing going forward will need either a periodic re-run or a follow-up wiring into `src/outcomes/alpaca_tracker.py`'s own write path. Disclosed as the natural next increment, not done in this slice to keep it reviewable.
+- MFE/MAE accuracy is bounded by candle granularity (bars, not ticks) — the realized-P&L clamp added above handles the one place this surfaced as a real inconsistency, but the excursion *between* entry and exit (away from the exact exit point) is still a bar-level approximation, same caveat any OHLC-derived MFE/MAE system has.
+
+**Next**: Priority 2 (part 2b) — a `rejected_signal_outcomes` table — then Priority 3 (Strategy Research Laboratory), per "go on."

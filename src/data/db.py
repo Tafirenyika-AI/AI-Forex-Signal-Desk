@@ -456,6 +456,15 @@ trade_outcomes = Table(
     Column("outcome", String, nullable=False),  # WIN / LOSS / BREAKEVEN
     Column("synced_at", DateTime(timezone=True), nullable=False),
     Column("broker", String, nullable=True, default="oanda"),
+    # V4 Priority 2 (docs/V4_ARCHITECTURE.md Section 14 gap): max favorable/
+    # adverse excursion in USD, computed from real candle highs/lows between
+    # opened_at and closed_at (see src/outcomes/excursion.py). Nullable —
+    # every row before this migration predates these columns, and any row
+    # still missing opened_at or entry_price (see the entry_price nullable
+    # note above) genuinely can't have this computed either; honestly null,
+    # same convention as entry_price, not a fabricated value.
+    Column("mfe_usd", Float, nullable=True),
+    Column("mae_usd", Float, nullable=True),
     # Widened to include broker (broker_trade_id is only unique WITHIN one
     # broker's own ID space) and closed_at (real gap found 2026-09-05: OANDA
     # can report a genuine PARTIAL close on the same tradeID — a later full
