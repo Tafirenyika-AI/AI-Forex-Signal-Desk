@@ -145,3 +145,34 @@ Both fixed with dedicated regression tests reproducing the exact real bug patter
 - `mean_move_in_favor` is an unweighted average of signed price moves, not risk-adjusted or cost-adjusted (no spread/slippage) — directionally informative, not a substitute for the real backtester's realistic accounting.
 
 **Priority 2 is now fully complete** (all 4 items — benchmarks, regime detail columns, MFE/MAE, rejected-signal segmentation). **Next**: Priority 3 (Strategy Research Laboratory) or Priority 4 (opportunity scanner), per "go on" — Priority 3 is the larger, named-strategy-family work; worth confirming scope/order before diving into a multi-week slice of new strategy code.
+
+---
+
+## Priority 3 (part 1) — Strategy Registry + Strategy A hypothesis test — **DONE**
+
+2026-10-08. User explicitly chose Priority 3 (Strategy Research Laboratory) over Priority 4 (scanner) when asked. Covers brief Section 6 (Strategy Registry) and Section 7 (Evidence Registry) structurally for all 10 named strategy families, plus one real, live-verified hypothesis test (Strategy A).
+
+**`src/strategies/registry.py`** (new): `StrategySpec` dataclass with all 13 fields the brief requires verbatim (Hypothesis/Eligible instruments/Timeframe/Entry conditions/Exit conditions/Position sizing assumptions/Stop-loss logic/Invalidation conditions/Expected holding period/Data requirements/Transaction costs/Failure conditions/Validation criteria), plus an honest `status` ladder (`RESEARCH_SPEC_ONLY` → `HYPOTHESIS_TESTED` → `BACKTESTED` → `SHADOW` → `PAPER_APPROVED`) so this registry can't silently drift into claiming more than has actually been validated. All 10 strategies (A–J) specified in full, each grounded in THIS project's real, already-built infrastructure where it applies (e.g. Strategy C/J explicitly reuse the existing ATR-ratcheting trailing stop from the earlier "model intelligence" work rather than re-describing a new one; Strategy H reuses Equity V2's SIC_TO_SECTOR + cross-market features) and honest about genuine new-work gaps where they exist (Strategy D needs deeper intraday backfill; Strategy E needs a new VWAP feature that doesn't exist anywhere yet; Strategy I needs new cointegration-testing code; Strategy G needs a new "surprise magnitude" feature).
+
+**`docs/V4_STRATEGY_RESEARCH.md`** (new, the brief's own required Section 21 deliverable): summarizes the registry, and builds the Strategy Evidence Registry (Section 7) with 4 REAL literature citations looked up live via WebSearch on 2026-10-08 (not recalled from memory, not fabricated) — Moskowitz/Ooi/Pedersen 2012 (time-series momentum), Jegadeesh/Titman 1993 (cross-sectional momentum), Gatev/Goetzmann/Rouwenhorst 2006 (pairs trading), Bernard/Thomas 1989 (post-earnings-announcement drift). The other 6 strategy families (C/D/E/F/H/J) are honestly left without a single canonical citation — the brief names these as generic research AREAS, not specific papers, and inventing an authoritative-sounding citation for them would violate the brief's own "do not accept... hypothetical performance claims" standard applied to itself.
+
+**`src/strategies/time_series_momentum.py`** (new) — Strategy A's real hypothesis test: does an instrument's own trailing return predict the sign of its forward return? Nearest-timestamp (pandas `merge_asof`) day-count lookback/holding windows, not a fixed bar count — so weekend/holiday gaps never silently misalign the window. Pure statistical test only (normal-approximation z-test vs. hit_rate=0.5) — no transaction costs, no sizing, no stops (that's the `BACKTESTED` stage, not done in this pass).
+
+**Live-verified against real production data, not synthetic** (synthetic data was used only to prove the math correct first — `tests/test_time_series_momentum.py` constructs deterministic persistent/anti-persistent series with a KNOWN-by-construction answer, confirming the function gets 90%/1.5% hit rates respectively before trusting it against anything real): ran the real test against this project's own backfilled H4 candle history across 3 lookback/holding pairs (7d/1d, 28d/7d, 84d/30d) for the brief's 8 named equity candidates.
+
+**Real, disclosed data gap found**: only 3 of the 8 named equities (NVDA, AAPL, MSFT) have ANY backfilled H4 history — the other 5 (AMD, AMZN, META, GOOGL, TSLA) were never traded by this account and were never added to any backfill list, so `n=0` for all of them. Flagged for Priority 4 (the opportunity scanner needs this same universe).
+
+**Real finding for the 3 instruments that do have history**: no significant momentum signal at 7d/1d or 28d/7d (all `|z| < 1.5`), but a statistically significant POSITIVE signal at 84d lookback / 30d holding for all three — NVDA z=2.55 (hit rate 53.5%), AAPL z=3.34 (54.7%), MSFT z=6.32 (58.8%) — directly consistent with the cited literature's own finding that time-series momentum is a medium/long-horizon effect. Explicitly documented as `HYPOTHESIS_TESTED`, not tradeable evidence — no costs, sizing, or stops modeled; MSFT's strong z-score paired with a tiny raw mean-move-in-favor (0.00023) is called out in the doc itself as a concrete illustration of why a significant hit rate alone isn't proof of a tradeable edge.
+
+**Files changed**: `src/strategies/__init__.py` (new), `src/strategies/registry.py` (new), `src/strategies/time_series_momentum.py` (new), `docs/V4_STRATEGY_RESEARCH.md` (new), `tests/test_strategy_registry.py` (new, 4 tests), `tests/test_time_series_momentum.py` (new, 4 tests).
+
+**Tests**: 8 new, all passing. Full suite: **429/429 passing** (421 prior + 8 new), zero regressions.
+
+**Execution-impact assessment**: zero. No broker call anywhere in either new module; `time_series_momentum.py` only reads `candles`, writes nothing; the registry is pure in-memory Python data.
+
+**Known limitations, disclosed not hidden**:
+- 7 of 10 strategy families remain `RESEARCH_SPEC_ONLY` — specs exist, nothing run against real data yet. Deliberate scoping for this slice, not an oversight — the user chose Priority 3 broadly, not "implement and validate all 10 strategies in one pass."
+- Strategy A's result is equities-only; Strategy J explicitly calls for crypto to be validated SEPARATELY, not inferred from this result.
+- No strategy here is wired into `src/decision/fusion.py` or any live decision path — explicitly Priority 5's job.
+
+**Next**: continue Priority 3 (additional strategy hypothesis tests, e.g. Strategy F which is fully data-ready already) or move to Priority 4 (opportunity scanner) — per "go on," picking whichever next slice stays similarly scoped and verifiable.
