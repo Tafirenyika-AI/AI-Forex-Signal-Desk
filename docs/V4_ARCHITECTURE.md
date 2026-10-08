@@ -1,0 +1,99 @@
+# V4 Phase 0 — Repository Architecture Assessment & Gap Analysis
+
+Source brief: "AI TRADING DESK V4 — FINAL MASTER IMPLEMENTATION BLUEPRINT" (pasted 2026-10-08), Section 22 deliverables #1, #3, #4. Companion documents: `docs/V4_SAFETY_AUDIT.md` (deliverable #2, #5), `docs/V4_DATA_SOURCES.md` (deliverable #6).
+
+**Critical context for this entire document**: six days before this brief, a 20-phase effort ("AI TRADING DESK — EQUITY INTELLIGENCE V2", full log in `docs/EQUITY_V2_IMPLEMENTATION_LOG.md`) already built a large fraction of what V4 asks for. This document's single most important job is distinguishing **already built and tested** from **genuinely new** — the brief's own instruction is explicit: "Do not rebuild the project from scratch. Upgrade the existing system intelligently."
+
+## 1. Current repository architecture (as of 2026-10-08)
+
+**Broker**: Alpaca only (OANDA permanently removed 2026-09-30/10-01 — all forex tables, UI, and scheduled tasks deleted; `src/config.py` has no path to construct live-trading credentials for either broker).
+
+**Pipeline, as it exists today**:
+```
+Market data (src/broker/alpaca.py REST + src/market_data/alpaca_stream.py WebSocket)
+  → Candle persistence (candles table)
+  → Feature engineering (src/features/engine.py technical + src/features/equity_*.py fundamental/news/cross-market/sector)
+  → Regime classification (src/models/regime.py — TREND/RANGE/SHOCK/HIGH_VOLATILITY/UNKNOWN)
+  → Component scoring (price model [live, trained every cycle] + macro/cross_market/news/session/currency_strength [structurally dead for equities, confirmed 2026-10-01] + shadow-only equity challengers [Phase 10, never wired])
+  → Fusion (src/decision/fusion.py — fixed-weight heuristic combiner, NOT a learned meta-model)
+  → Risk governor (src/risk/governor.py — the live gate chain; src/risk/equity_governor_extensions.py — 5 shadow-only additional gates, confirmed unwired by grep)
+  → Execution (src/execution/service.py — "deliberately dumb", idempotent on client_order_id)
+  → Outcome tracking (src/outcomes/alpaca_tracker.py — real FIFO matcher against Alpaca's complete order history)
+  → Self-training (src/models/train_meta_model.py — trains and auto-deploys a meta-model on real outcomes; src/models/equity_challengers.py — shadow-only, never promoted automatically)
+```
+
+**Multi-user, auth, dashboard**: Streamlit (`src/dashboard/app.py`, 15+ tabs including a dedicated "Equity Intelligence" tab), bcrypt+Fernet auth, invite-only registration, per-user Alpaca credentials.
+
+**Persistence**: Postgres (Neon) in production, SQLite for local/test; 43+ tables, all additive migrations via `metadata.create_all()`.
+
+**Orchestration**: Windows Task Scheduler (no persistent daemon) — `run_loop.py` (trading cycle), `sync_outcomes.py`, `run_reconciliation.py`, `sync_sec_edgar.py`, `sync_equity_relationships.py`, `sync_equity_news.py`, all with the `WakeToRun`/`StartWhenAvailable` settings a real prior incident (multi-day silent outage) forced this project to always set explicitly.
+
+**Test suite**: 348 tests, all passing, covering every module including a dedicated observability trace (`src/evaluation/decision_trace.py`), a champion/challenger promotion gate (`src/evaluation/equity_challenger_promotion.py`), and (as of this Phase 0 pass) the two real bugs found during this audit.
+
+## 2. Gap analysis — V4 brief, section by section
+
+| V4 Section | Ask | Status | Detail |
+|---|---|---|---|
+| 2. Position protection | `LEGACY_OPEN_POSITION`, feature flags (`V4_ENABLED` etc.) | **NOT BUILT** | Flagged since Equity V2's own Phase 0 audit; still the single largest structural gap. No env-var-based feature-flag convention exists yet (existing flags are CLI args, e.g. `--auto-execute`) — a new, parallel convention, not a replacement. |
+| 3. Alpaca-only architecture | Confirm, no other brokers | **DONE** | OANDA fully erased; no IBKR/Tradovate/futures/Web3 anywhere in `src/`. |
+| 4. Market intelligence — price data | Audit feed, don't mislabel IEX as consolidated | **DONE, confirmed honest** | `feed="iex"` used explicitly with a disclosed comment explaining why (free/paper tier can't access SIP); re-confirmed by this audit's own grep that nothing anywhere mislabels it. |
+| 4. Fundamentals (SEC EDGAR) | Point-in-time filings | **DONE** | Equity V2 Phase 4 — `src/equity/sec_edgar.py`, real XBRL data, `filed_at` vs `period_end` split, daily scheduled sync. |
+| 4. News | Ticker-specific, provenance | **DONE** | Equity V2 Phase 6 — `src/news/equity_news.py`, Alpaca News API, event classification, real price-reaction measurement. |
+| 4. Macro (FRED) | Already exists, extend | **PARTIAL** | `src/macro/fred.py` pre-existed (forex-era); genuinely currency-agnostic series (10Y/2Y yields, USD index, oil) already flow into `market_indicators`, reused directly by Equity V2 Phase 9's MACRO feature group. No NEW macro series added for V4's specific asks (credit conditions, broader risk conditions) — real gap. |
+| 4. Sector/market ETFs | SPY/QQQ/IWM/XLK/XLF/XLE/XLV + others | **MOSTLY DONE** | Equity V2 Phase 7 (SIC→sector→ETF mapping) + Phase 8 (cross-market features, SPY + 11 sector ETFs backfilled) cover XLK/XLF/XLE/XLV and the rest of the 11 SPDR sectors + SPY. **IWM, GLD, IAU, USO are NOT yet in the backfilled benchmark set** (`src/scripts/backfill_candles.py`'s `BENCHMARK_INSTRUMENTS`) — real, small, easy gap. QQQ already configured per-user but not in the fixed benchmark set itself. |
+| 5. Opportunity scanner | Ranked scanner over a named candidate list | **NOT BUILT** | Equity V2's feature engine (Phase 9) computes the inputs a ranking would need (relative strength, volatility percentile, volume, sector) per-ticker, but there is no scanner that ranks a *universe* and surfaces "top opportunities" anywhere — genuinely new work, though it would mostly be a thin composition layer over Phase 9. |
+| 6. Strategy Research Laboratory | 10 named strategy families (A–J), formal per-strategy spec | **NOT BUILT** | Equity V2 Phase 10's four challengers (fundamental/news_event/market_regime/cross_market) are a *different*, narrower decomposition by data source, not by the brief's named trading-strategy families (momentum, breakout, VWAP reversion, pairs trading, etc.). Real, substantial new work — but the walk-forward validation harness (Phase 11), the challenger-training machinery (Phase 10), and the promotion gate (Phase 18) are all directly reusable *infrastructure* for whatever new strategies get built, not duplicated effort. |
+| 7. Strategy Evidence Registry | Literature citations + our own backtest/shadow/paper track record per strategy | **NOT BUILT** | Genuinely new — no literature-grounded evidence log exists. |
+| 8. Market regime classifier | TREND_UP/TREND_DOWN/RANGE_BOUND/HIGH_VOLATILITY/LOW_VOLATILITY/EVENT_DRIVEN/UNCERTAIN + probabilities | **PARTIAL** | `src/models/regime.py` has TREND/RANGE/SHOCK/HIGH_VOLATILITY/UNKNOWN (confirmed by reading the code, 2026-10-08) — different label set (no directional trend split, no explicit LOW_VOLATILITY or EVENT_DRIVEN, no probability/uncertainty output, just a hard label). A real, scoped gap: extending rather than replacing is the right call, since `fuse()`'s own `REGIME_WEIGHT_MULTIPLIERS` already depends on the current label set. |
+| 9. Specialist AI models | Per strategy family, model comparison, leakage-safe validation | **INFRASTRUCTURE DONE, APPLICATION NOT** | Equity V2 Phase 10/11 already built exactly this *discipline* (walk-forward splits reusing `price_model.py`'s own generator, purged labels, Brier calibration, regime-stability breakdown) — for its own 4 components. Applying the same discipline to the 10 new strategy families is the new work; the discipline itself doesn't need reinventing. |
+| 10. Adaptive meta-model (strategy selector) | Learned, evidence-based selection across strategies | **PROTOTYPE EXISTS, NOT THE FULL ASK** | `src/decision/fusion.py` is the CURRENT live combiner — a documented fixed-weight heuristic, not learned (its own module docstring says so explicitly). Equity V2 Phase 10's `fit_meta`/`predict_meta` is a narrow, shadow-only logistic-regression stacker over 4 components, never wired live. V4 wants real learned strategy *selection* (which strategy, not just how to blend scores) — bigger scope, but the stacking mechanism is a reusable starting point. |
+| 11. AI Decision Committee | 7 specialist components + mandatory explainability | **PARTIAL** | Equity V2 Phase 17's `decision_trace.py` already gives full reproducibility for the EXISTING pipeline (joins trade_intents→predictions→risk_decisions→orders_fills→trade_outcomes, with a human-readable narrative). Extending it to new strategy families is incremental. The 7 *named* specialist components (incl. "execution quality") don't all exist as distinct modules yet. |
+| 12/13. Risk Governor extensions | Sector/correlation/daily-loss/drawdown/liquidity/spread/stale-data/duplicate-order/existing-position/connectivity/emergency-suspend-new-orders-only | **MOSTLY DONE, ONE REAL GAP** | Equity V2 Phase 13 (5 shadow-only gates: sector concentration, single-name concentration, trailing drawdown breaker, min-edge-after-costs, earnings lockout) + Phase 14 (the REAL, LIVE no-pyramid fix) + this Phase 0's own two bug fixes cover most of this list directly. **Liquidity requirements** are not explicitly gated anywhere (spread gate exists; a dedicated minimum-volume/liquidity floor does not). **Emergency-suspend-new-orders-only** (distinct from the existing kill switch, which the brief implies should NOT touch existing protective-order management) needs a dedicated check — the existing kill switch already correctly never touches existing positions (confirmed: it only ever returns `RiskDecision(False, ...)`, never calls a broker write), so this may already be satisfied; worth an explicit test to prove it, not just an assumption. |
+| 14. Outcome Memory | Full decision+trade journal incl. MFE/MAE, REJECTED-signal hypothetical tracking | **PARTIAL** | `trade_intents`/`risk_decisions`/`orders_fills`/`trade_outcomes` already capture almost everything named (decision time, symbol, model confidence, broker order ID, fill price, realized P&L). **MFE/MAE (max favorable/adverse excursion) are NOT tracked anywhere** — real, clean gap. **Rejected-signal hypothetical outcome tracking does not exist** — `signal_evaluations` tracks challenger decisions' hit/miss, but not "what would have happened if a risk-REJECTED trade had been taken anyway" — real, genuinely new work, directly useful for evaluating whether the risk governor is too conservative. |
+| 15. Realistic portfolio backtesting | Partial fills, corporate actions, session-awareness, short-selling constraints, Sharpe/Sortino/etc., SPY/QQQ baseline, walk-forward + untouched holdout, cost sensitivity | **FOUNDATION DONE, REAL EXTENSIONS NEEDED** | Equity V2 Phase 12's `portfolio_engine.py` already does overlapping positions, reserved capital, sector caps, true mark-to-market equity curve, SPY-relative return, beta. Missing: partial fills, corporate actions (splits/dividends), explicit crypto-24/7 vs. equity-session awareness, short-selling margin constraints, Sharpe/Sortino/profit-factor/turnover as named output fields (some exist under different names in `src/backtest/equity_walk_forward.py`'s model-comparison report, not the portfolio engine itself), and an explicitly *untouched* final holdout split (walk-forward exists; a holdout that's never looked at during development does not). |
+| 16. Broker-verified performance | Separate broker-verified from internal; never combine ambiguously | **DONE** | Equity V2 Phase 1 (reconciliation) + Phase 15 (performance forensics: broker/model-attributable/unexplained/unrealized, explicitly never blended) directly satisfy this. Likely the single most already-covered section in the whole brief. |
+| 17. TradingView webhook | Optional, OFF by default, supplementary only | **NOT BUILT, 0%** | Genuinely new. `V4_TRADINGVIEW_ENABLED=false` by default per the brief's own instruction — must ship disabled. |
+| 18. Champion/Challenger | No auto-promotion, human-gated | **DONE for the Equity V2 challengers** | `src/evaluation/equity_challenger_promotion.py` (5-gate report, no `promote()` function, confirmed by a structural test). Extending to new V4 strategy families is incremental — same mechanism, new inputs. |
+| 19. Dashboard | 5 new grouped nav sections | **ONE TAB EXISTS, REAL GAP** | Equity V2 Phase 16 added "Equity Intelligence" (data health, performance, reconciliation, per-ticker snapshot) — a slice of the brief's "Trading Performance" + "Risk and Operations" asks. The brief wants a much larger navigation restructure (Market Intelligence / AI Intelligence / Research Laboratory sections don't exist at all) — real, substantial new dashboard work. |
+| 20. Security/reliability/cost control | Mostly already-established conventions | **MOSTLY DONE** | Structured logging, retry/backoff, idempotent orders (tested), additive migrations (this project's standing practice throughout, verified live at every schema change this session) — largely a confirmation ask, not new build. |
+
+## 3. Prioritized, file-by-file implementation plan
+
+Ordered by: (a) safety-critical first, (b) foundational/reusable-by-everything-else next, (c) highest brief-emphasis sections, (d) genuinely optional/lowest-risk last (TradingView).
+
+### Priority 1 — Close the position-protection structural gap (Section 2)
+- **New**: `src/config.py` or a new `src/feature_flags.py` — the 5 `V4_*` env-var flags, all defaulting to the safe/off value the brief specifies.
+- **New**: a `legacy_position_activated_at` concept — likely a new singleton table (matching the existing `manual_kill_switch` pattern) holding one timestamp, set once, read everywhere a new V4 component needs to decide "is this position legacy." A position opened before that timestamp is `LEGACY_OPEN_POSITION`.
+- **Extend**: `src/risk/governor.py` or a new `src/risk/legacy_position_guard.py` — a gate (additive, same posture as the Phase 14 no-pyramid gate) that refuses ANY new-V4-component-originated order touching a legacy position's existing quantity/stop/target, while still allowing it to be *read* for portfolio-risk aggregation.
+- **Test first**: a test proving a legacy position survives a simulated full decision-cycle re-run untouched, before any strategy-family code is allowed to run at all.
+
+### Priority 2 — Fill the small, concrete gaps in already-built infrastructure
+- **Extend**: `src/scripts/backfill_candles.py`'s `BENCHMARK_INSTRUMENTS` to add IWM/GLD/IAU/USO (small, low-risk, data-only change).
+- **Extend**: `src/models/regime.py` — add TREND_UP/TREND_DOWN (split the existing TREND by sign of `trend_slope`), LOW_VOLATILITY (the low end of the existing `vol_percentile`, symmetric to the existing HIGH_VOLATILITY threshold), and a probability/uncertainty output alongside the hard label (the percentile values already computed are a natural, cheap source for this). EVENT_DRIVEN needs a real trigger (likely Phase 6's own `company_events`/earnings-lockout machinery from Equity V2 Phase 13, already built) — reuse, don't rebuild.
+- **New**: MFE/MAE columns on `trade_outcomes` (additive migration) + a computation pass reusing the candle history between `opened_at`/`closed_at`.
+- **New**: a `rejected_signal_outcomes` table + scheduled job that re-prices a risk-rejected `trade_intent` at its own horizon's close, purely for research (never feeding back into live risk decisions automatically).
+
+### Priority 3 — Strategy Research Laboratory (Section 6/7) + its evidence registry
+- **New**: `src/strategies/registry.py` — the formal per-strategy spec dataclass (hypothesis/instruments/timeframe/entry/exit/sizing/stop/invalidation/holding period/data/costs/failure conditions/validation), modeled on how `src/evaluation/promotion_gates.py`/`equity_challenger_promotion.py` already structure a "report," not a new paradigm.
+- **New**: one module per strategy family under `src/strategies/` (A–J), each producing a signal reusing Equity V2's existing feature/candle infrastructure wherever the data already exists (e.g. VWAP mean reversion reuses Phase 8's `approx_vwap`; sector rotation reuses Phase 7's sector mapping).
+- **New**: `docs/V4_STRATEGY_RESEARCH.md` — the evidence registry itself (literature + our own backtest/shadow/paper results per strategy), populated incrementally as each strategy is built and evaluated through the EXISTING `src/backtest/equity_walk_forward.py`/`portfolio_engine.py` harness.
+- Every strategy's signal flows through the EXISTING, unmodified risk governor — never a parallel path.
+
+### Priority 4 — Opportunity scanner (Section 5)
+- **New**: `src/scanner/opportunity_scanner.py` — a thin ranking layer over Phase 9's `build_equity_feature_vector` across a configurable universe (the brief's own named candidate list as the default), with transparent per-factor scoring, not a black-box rank.
+
+### Priority 5 — Adaptive meta-model / strategy selector upgrade (Section 10/11)
+- Extend Phase 10's `fit_meta`/`predict_meta` stacking mechanism to select *among strategies* (not just blend 4 existing components), gated the same shadow-only way until Phase 18's promotion report shows real evidence.
+
+### Priority 6 — Portfolio backtesting extensions (Section 14/15)
+- Extend `src/backtest/portfolio_engine.py`: partial fills, corporate-action awareness, explicit session/24-7 handling, short-margin constraints, named Sharpe/Sortino/profit-factor/turnover fields, a true held-out final test window never touched during strategy development.
+
+### Priority 7 — Dashboard restructure (Section 19)
+- Reorganize `src/dashboard/app.py`'s tab list into the 5 named groups, folding the existing "Equity Intelligence" tab's content into "Trading Performance"/"Risk and Operations" rather than duplicating it.
+
+### Priority 8 — TradingView (Section 17), last and explicitly optional
+- **New**: `src/integrations/tradingview_webhook.py` — HTTPS receiver, signature/source verification, dedup, replay protection, symbol normalization, event queue. Ships behind `V4_TRADINGVIEW_ENABLED=false`; alerts are evidence fed to the Decision Committee, never a direct order trigger.
+
+## 4. What this document deliberately does not do
+
+Per the brief's own "Do not change existing execution behavior... without explicit approval" and "proceed incrementally with read-only and research functionality" — this document is itself Phase 0 output, read-only in nature (the two bug fixes in `docs/V4_SAFETY_AUDIT.md` were explicitly approved separately, as safety corrections to EXISTING code, not new V4 feature work). No strategy, scanner, meta-model, or dashboard code from the plan above has been written yet. Each Priority above should get its own explicit go-ahead before implementation begins, following this project's own established pattern throughout the Equity V2 effort.
