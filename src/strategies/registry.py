@@ -193,11 +193,11 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
                                  "— the classic 'false breakout' failure mode this strategy must explicitly test "
                                  "for, not just assume away.",
         expected_holding_period="Intraday only (same session), typically under 4 hours.",
-        data_requirements="PARTIALLY MISSING: this project has no explicit 'session open' feature or intraday "
-                           "M15/M1 candle depth beyond M15's 60-day backfill window (src/scripts/"
-                           "backfill_candles.py's TARGET_LOOKBACK) — a real gap for testing this specific "
-                           "hypothesis properly; M15 depth is enough for a first-pass test but not a long "
-                           "multi-year validation without a deeper intraday backfill.",
+        data_requirements="RESOLVED 2026-10-08: M15's 60-day depth was genuinely enough for a real first-pass test "
+                           "(confirmed live: ~60-63 real trading days per instrument) — built "
+                           "src/strategies/opening_range_breakout.py directly against it, no new backfill needed "
+                           "for this first pass. Still true: a long multi-year validation would need deeper "
+                           "intraday backfill than exists today.",
         transaction_costs="Higher turnover (one round-trip per eligible session) and real intraday slippage risk "
                            "at the breakout moment itself (a known weak point of this strategy family generally).",
         failure_conditions="False-breakout rate exceeds true-breakout persistence rate, or any edge found "
@@ -205,6 +205,8 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
                             "sensitive to execution quality).",
         validation_criteria="True-breakout persistence rate statistically exceeds the false-breakout rate, net of "
                              "realistic slippage, across multiple liquid names and session types.",
+        status="HYPOTHESIS_TESTED",
+        implementation_ref="src/strategies/opening_range_breakout.py",
     ),
     "E": StrategySpec(
         code="E", name="VWAP Mean Reversion",

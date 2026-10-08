@@ -23,7 +23,7 @@ criteria.
 | A | Time-Series Momentum | Own trailing return predicts own forward return's sign | **HYPOTHESIS_TESTED** (real result below) |
 | B | Cross-Sectional Momentum | Relative-strength ranking predicts relative forward performance | **HYPOTHESIS_TESTED** (real result below — in-sample significant, FAILS a genuine holdout) |
 | C | Trend Following | Trend persists; trailing-stop captures more of it than a fixed horizon | **HYPOTHESIS_TESTED** (real result below — important caveat: tested with a fixed holding period, not the strategy's own actual trailing-stop exit) |
-| D | Opening-Range Breakout | Volume-confirmed opening-range breaks persist through the session | RESEARCH_SPEC_ONLY |
+| D | Opening-Range Breakout | Volume-confirmed opening-range breaks persist through the session | **HYPOTHESIS_TESTED** (real result below — consistently negative across every config tested, holdout inconclusive on tiny samples) |
 | E | VWAP Mean Reversion | Statistically stretched price reverts to session VWAP under calm regimes | **HYPOTHESIS_TESTED** (real result below — suggestive full-sample, inconclusive once split) |
 | F | Volatility Breakout | Volatility compression is followed by a directionally-persistent expansion | **HYPOTHESIS_TESTED** (real result below) |
 | G | Earnings/Event-Driven | Earnings surprises drift in the surprise's direction (PEAD) | **HYPOTHESIS_TESTED** (real result below — sample too small to conclude either way) |
@@ -541,25 +541,72 @@ test (the synthetic test fixtures didn't happen to include this specific
 annual/quarterly collision until a dedicated regression test was added
 for it afterward).
 
-## 13. Known limitations, disclosed not hidden
+## 13. Strategy D — Real Hypothesis Test Results, WITH holdout attempt (live, 2026-10-08)
 
-- 1 of 10 strategy families (D) is `RESEARCH_SPEC_ONLY` — its spec
-  exists, nothing has been run against real data yet (it needs deeper
-  intraday backfill than currently exists). This is deliberate,
-  incremental scoping, not an oversight.
-- Of the 9 strategies now `HYPOTHESIS_TESTED` (A/B/C/E/F/G/H/I/J), holdout
-  testing has only been applied to A/B/J so far — and in every one of
-  those 3 cases, the apparent full-sample significance did NOT survive
-  (only Strategy A's AAPL result held up; B and J did not replicate at
-  all). C showed no signal even full-sample; E's one standout result
-  was inconclusive once split; F's one significant result (AAPL, n=8)
-  and H's contradicting result have NOT yet been holdout-checked and
-  could have the same fragility; G's sample sizes (n=6-7) were too
-  small to reach significance either way; I found no cointegrated pair
-  at all, so there is nothing left to holdout-check for it in this
-  universe. The
-  honest overall state of this registry today: no strategy has cleared a
-  real, holdout-robust bar for trading.
+Ran `src/strategies/opening_range_breakout.py`'s `evaluate_opening_range_breakout_hypothesis()`
+against real M15 history (confirmed live: ~60-63 real trading days per
+instrument, 2026-07-08 to 2026-10-08 — M15's 60-day backfill depth was
+genuinely enough for this first-pass test, correcting this registry's own
+earlier assumption that it wasn't). Opening range = first 2 or 4 M15 bars
+(30/60 minutes) after the real 13:30 UTC session open; breakout requires
+a volume-confirmed close outside that range.
+
+| Instrument | Opening range | Volume mult. | n | Hit rate | z-score |
+|---|---|---|---|---|---|
+| NVDA | 2 bars | 1.2x | 16 | 43.8% | -0.50 |
+| NVDA | 4 bars | 1.5x | 13 | 30.8% | -1.39 |
+| AAPL | 2 bars | 1.2x | 20 | 30.0% | -1.79 |
+| AAPL | 4 bars | 1.5x | 16 | 25.0% | **-2.00** |
+| MSFT | 2 bars | 1.2x | 16 | 31.3% | -1.50 |
+| MSFT | 4 bars | 1.5x | 6 | 0.0% | **-2.45** |
+
+**Real, striking, consistent finding**: every single one of the 6
+instrument/config combinations tested is NEGATIVE — volume-confirmed
+opening-range breakouts in this real sample tend to falsely reverse more
+often than persist, the OPPOSITE of the strategy's own hypothesis. This
+is directionally consistent across every config, not just one lucky
+combination, which is itself notable.
+
+**Holdout attempt, honest about its own limits**: split each instrument's
+real trading days chronologically (80/20). The holdout portions are too
+small to mean anything on their own (AAPL 4-bar: holdout n=0; AAPL 2-bar:
+holdout n=1; MSFT 4-bar: holdout n=1; NVDA 4-bar: holdout n=3) — this
+project's own ~60 real trading days of M15 depth, combined with how rare
+a volume-confirmed breakout actually is per day, leaves too few events
+per instrument to properly holdout-test with this short a history. This
+is an honest **inconclusive-by-sample-size** result for the holdout
+check specifically, NOT a confirmation that the negative full-sample
+finding is robust — the same caution this document has applied to every
+other strategy's full-sample number applies here too.
+
+**Conclusion for Strategy D**: a real, consistently negative signal in
+the full sample (false-breakout risk may genuinely dominate for this
+instrument set and window), but not independently holdout-confirmed due
+to sample-size limits — more real M15 history accumulating over time
+would make the holdout check meaningfully more powerful without any code
+change, same situation as Strategy G.
+
+## 14. Known limitations, disclosed not hidden
+
+- **All 10 of 10 strategy families are now `HYPOTHESIS_TESTED`** — every
+  one has a real result against real data, not just a spec. None has
+  reached `BACKTESTED` status (full cost/sizing/stop simulation) or
+  beyond.
+- Holdout testing has only been applied to A/B/D/J so far — and in every
+  one of those 4 cases, the apparent full-sample finding did NOT survive
+  intact (only Strategy A's AAPL result held up; B and J did not
+  replicate at all; D's holdout samples were too tiny to confirm OR deny
+  its consistently-negative full-sample signal). C showed no signal even
+  full-sample; E's one standout result was inconclusive once split; F's
+  one significant result (AAPL, n=8) and H's contradicting result have
+  NOT yet been holdout-checked and could have the same fragility; G's
+  sample sizes (n=6-7) were too small to reach significance either way;
+  I found no cointegrated pair at all, so there is nothing left to
+  holdout-check for it in this universe. **The honest overall state of
+  this registry today: no strategy has cleared a real, holdout-robust bar
+  for trading** — a complete, real, first-pass validation of all 10 named
+  strategy families, with the central finding being how FEW of them hold
+  up under genuine scrutiny, not how many "work."
 - Only 3 of the brief's 8 named equity candidates have any backfilled
   candle history at all (see Section 1 above) — a real gap for Priority 4.
 - 2 of the 11 sector ETFs (XLE, XLF) have zero backfilled H4 history despite
