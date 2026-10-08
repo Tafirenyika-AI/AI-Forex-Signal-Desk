@@ -131,6 +131,8 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
                             "effect across the cross-section.",
         validation_criteria="Positive, cost-adjusted long-short spread return, stable across multiple non-"
                              "overlapping re-ranking periods, not concentrated in a single name.",
+        status="HYPOTHESIS_TESTED",
+        implementation_ref="src/strategies/cross_sectional_momentum.py",
     ),
     "C": StrategySpec(
         code="C", name="Trend Following",

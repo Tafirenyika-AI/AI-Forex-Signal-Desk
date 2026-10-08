@@ -21,7 +21,7 @@ criteria.
 | Code | Name | Hypothesis (one line) | Status |
 |---|---|---|---|
 | A | Time-Series Momentum | Own trailing return predicts own forward return's sign | **HYPOTHESIS_TESTED** (real result below) |
-| B | Cross-Sectional Momentum | Relative-strength ranking predicts relative forward performance | RESEARCH_SPEC_ONLY |
+| B | Cross-Sectional Momentum | Relative-strength ranking predicts relative forward performance | **HYPOTHESIS_TESTED** (real result below — in-sample significant, FAILS a genuine holdout) |
 | C | Trend Following | Trend persists; trailing-stop captures more of it than a fixed horizon | **HYPOTHESIS_TESTED** (real result below — important caveat: tested with a fixed holding period, not the strategy's own actual trailing-stop exit) |
 | D | Opening-Range Breakout | Volume-confirmed opening-range breaks persist through the session | RESEARCH_SPEC_ONLY |
 | E | VWAP Mean Reversion | Statistically stretched price reverts to session VWAP under calm regimes | RESEARCH_SPEC_ONLY |
@@ -71,9 +71,11 @@ Known limitation of our replication: no transaction-cost model applied yet
 Selling Losers: Implications for Stock Market Efficiency." *The Journal of
 Finance*, 48(1), 65–91.** The original, seminal cross-sectional momentum
 paper — 3-to-12-month formation periods produce significant positive
-returns buying past winners and selling past losers. — Our own backtest:
-not yet run (`RESEARCH_SPEC_ONLY`). Known constraint: the short leg of this
-strategy cannot currently be traded live — this project's own risk posture
+returns buying past winners and selling past losers. — Our own
+hypothesis test: see Section 8 below — an apparently significant
+60-bar/20-bar spread (t=4.01 full-sample) did NOT replicate on a genuine
+holdout (t=0.12). Known constraint: the short leg of this strategy cannot
+currently be traded live regardless — this project's own risk posture
 disables equity short-selling without separate approval (brief Section 12).
 
 ### Statistical Pairs Trading (Strategy I)
@@ -364,11 +366,56 @@ REVERSES sign on crypto, and no tested crypto-specific config survives a
 genuine holdout either. No positive finding to report for crypto momentum
 or volatility breakout at the configs tested.
 
-## 8. Known limitations, disclosed not hidden
+## 8. Strategy B — Real Hypothesis Test Results, WITH holdout (live, 2026-10-08)
 
-- 5 of 10 strategy families (B, D, E, G, I) are `RESEARCH_SPEC_ONLY` — specs
+Cross-section: the 13 real, currently-backfilled US-equity-calendar
+instruments (3 equities + 10 ETFs — same universe the opportunity scanner
+uses, minus XLE/XLF's own gap at the time; `evaluate_cross_sectional_
+momentum_hypothesis` found 12 covered once XLE/XLF's backfill completed).
+Classic top-tier-minus-bottom-tier long-short spread
+(`src/strategies/cross_sectional_momentum.py`), NOT relative-to-SPY
+(that's Strategy H's distinct construction).
+
+| Lookback | Holding | n | Mean spread | t-statistic |
+|---|---|---|---|---|
+| 5 bars | 5 bars | 1,152 | -0.00062 | -0.99 |
+| 20 bars | 20 bars | 1,122 | 0.00162 | 1.23 |
+| 60 bars | 20 bars | 1,082 | 0.00461 | **4.01** |
+
+**Applying this session's holdout discipline immediately, before reporting
+the 60/20 result as a finding**:
+
+| | n | Mean spread | t-statistic |
+|---|---|---|---|
+| Development (earliest 80%) | 869 | 0.00565 | **4.59** |
+| Holdout (final 20%, untouched) | 213 | 0.00035 | **0.12** |
+
+**Does not replicate.** The apparently strong in-sample result (t=4.59 in
+development, t=4.01 full-sample) collapses to essentially zero (t=0.12) on
+genuinely held-out data — the third time this exact pattern has now shown
+up this session (Strategy A's 84d/30d result, Strategy J's 28d/7d crypto
+result, now this). **This recurring pattern is itself the most important
+finding across Priority 3's hypothesis-testing work so far**: with only
+~2 years of real backfilled history, several of these simple rank/sign-
+based tests find apparent significance that does not survive genuine
+out-of-sample validation — a strong argument for treating every full-
+sample result in this document as provisional until holdout-checked, not
+just the ones that happened to get checked first.
+
+## 9. Known limitations, disclosed not hidden
+
+- 4 of 10 strategy families (D, E, G, I) are `RESEARCH_SPEC_ONLY` — specs
   exist, nothing has been run against real data yet. This is deliberate,
   incremental scoping, not an oversight.
+- Of the 6 strategies now `HYPOTHESIS_TESTED` (A/B/C/F/H/J), holdout
+  testing has only been applied to A/B/J so far — and in every one of
+  those 3 cases, the apparent full-sample significance did NOT survive
+  (only Strategy A's AAPL result held up; B and J did not replicate at
+  all). C showed no signal even full-sample; F's one significant result
+  (AAPL, n=8) and H's contradicting result have NOT yet been holdout-
+  checked and could have the same fragility. The honest overall state of
+  this registry today: no strategy has cleared a real, holdout-robust bar
+  for trading.
 - Only 3 of the brief's 8 named equity candidates have any backfilled
   candle history at all (see Section 1 above) — a real gap for Priority 4.
 - 2 of the 11 sector ETFs (XLE, XLF) have zero backfilled H4 history despite
