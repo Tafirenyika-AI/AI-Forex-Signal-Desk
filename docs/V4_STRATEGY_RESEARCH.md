@@ -145,6 +145,15 @@ significant positive momentum signal for **all three** instruments
 matches the cited Moskowitz/Ooi/Pedersen finding that time-series momentum
 is a medium-to-long-horizon effect, not a short-horizon one.
 
+**⚠ Correction/update (2026-10-08, Priority 6's own holdout-testing item)**:
+this table was built from the FULL sample tested at once, with nothing
+held out. A genuine out-of-sample holdout re-test (Section 3's own
+follow-up below) found this "significant for all three" result does NOT
+robustly replicate — only AAPL's finding survives a real holdout; NVDA and
+MSFT's do not. Read the full-sample numbers above as in-sample evidence
+only, and see the holdout table further down before treating any of these
+three as validated.
+
 **This is a HYPOTHESIS_TESTED result, not a BACKTESTED or tradeable one.**
 No transaction costs, no position sizing, no stop-loss, no slippage are
 modeled above — `mean_move_in_favor` is a raw log-return, not a dollar P&L,
@@ -156,7 +165,17 @@ next real step for this strategy (not done in this pass) is a full
 `BACKTESTED` pass through `src/backtest/engine.py` with realistic costs —
 only after that would `SHADOW` status even be considered.
 
-**Real follow-up finding (2026-10-08, V4 Priority 6 verification pass) — exactly the gap the paragraph above warned about, now confirmed**: ran a real portfolio-level backtest (`src/backtest/portfolio_engine.py`) using 129 real signals generated from this exact sign-prediction direction (every ~30 bars across NVDA/AAPL/MSFT's real H4 history, standard ATR-based stop/target sizing — `ATR_STOP_MULTIPLIER`/`REWARD_RISK_MULTIPLE` from `src/decision/fusion.py`, the project's own established convention). **Result: net return -4.08%, win rate 42.9%, profit factor 0.88, Sharpe -0.39, Sortino -0.35 — a naive implementation of Strategy A's own validated sign-prediction is UNPROFITABLE.** This does not contradict the earlier hit-rate finding (both are real, computed correctly) — it demonstrates precisely why `HYPOTHESIS_TESTED` and `BACKTESTED` are different rungs on this registry's own status ladder: correctly predicting a return's SIGN more often than chance does not by itself produce a profitable trading rule once a real entry cadence, stop distance, and target are attached. **This real result should gate any future move of Strategy A toward `BACKTESTED`/`SHADOW` status** — `src/models/strategy_selector.py`'s current `ELIGIBLE_STRATEGIES = ("A",)` gate was set based on the sign-prediction evidence alone (Priority 5, before this backtest existed); the selector remains shadow-only/no-broker-call by construction regardless, so there is no live-safety impact, but this finding is a real, disclosed reason to treat Strategy A's current eligibility as provisional, not validated for real trading.
+**Real follow-up finding (2026-10-08, V4 Priority 6 verification pass) — exactly the gap the paragraph above warned about, now confirmed**: ran a real portfolio-level backtest (`src/backtest/portfolio_engine.py`) using 129 real signals generated from this exact sign-prediction direction (every ~30 bars across NVDA/AAPL/MSFT's real H4 history, standard ATR-based stop/target sizing — `ATR_STOP_MULTIPLIER`/`REWARD_RISK_MULTIPLE` from `src/decision/fusion.py`, the project's own established convention). **Result: net return -4.08%, win rate 42.9%, profit factor 0.88, Sharpe -0.39, Sortino -0.35 — a naive implementation of Strategy A's own validated sign-prediction is UNPROFITABLE.** This does not contradict the earlier hit-rate finding (both are real, computed correctly) — it demonstrates precisely why `HYPOTHESIS_TESTED` and `BACKTESTED` are different rungs on this registry's own status ladder: correctly predicting a return's SIGN more often than chance does not by itself produce a profitable trading rule once a real entry cadence, stop distance, and target are attached. **Consequence, acted on, not just disclosed**: `src/models/strategy_selector.py`'s `ELIGIBLE_STRATEGIES` was changed from `("A",)` to `()` the same day — the selector was already shadow-only/no-broker-call by construction (zero live-safety impact), but its hit-rate-only eligibility bar was retired in favor of requiring BOTH a significant hypothesis test AND a profitable backtest.
+
+**Second, even more direct follow-up finding (2026-10-08, V4 Priority 6's own "untouched final holdout" item) — the original full-sample claim does NOT robustly replicate out-of-sample**: `src/strategies/time_series_momentum.py`'s new `evaluate_momentum_hypothesis_with_holdout()` re-ran the exact validated 84d/30d configuration, splitting each instrument's real history chronologically into the earliest 80% ("development") and a genuinely untouched final 20% ("holdout") — the original Section 3 table above tested the FULL sample at once, with nothing held out.
+
+| Instrument | Development n / hit_rate / z | Holdout n / hit_rate / z |
+|---|---|---|
+| NVDA | 1,095 / 54.8% / **3.17** | 274 / 48.5% / **-0.48** |
+| AAPL | 1,024 / 56.0% / **3.81** | 255 / 57.3% / **2.32** |
+| MSFT | 1,031 / 62.8% / **8.19** | 257 / 46.3% / **-1.19** |
+
+**Only AAPL's finding replicates on genuinely held-out data.** NVDA and MSFT's original full-sample significance (z=2.55 and z=6.32 respectively) does not survive a real out-of-sample test — both flip to non-significant-or-negative on the untouched final 20%, consistent with having been, at least partly, an artifact of testing the entire sample at once rather than a replicated, robust effect. This is independent evidence pointing the same direction as the unprofitable-backtest finding above, and reinforces rather than merely coincides with the decision to pull Strategy A's selector eligibility — **the original "significant across all 3 instruments" claim should now be read as "significant in-sample for 3, replicated out-of-sample for only 1."**
 
 ## 4. Strategy F — Real Hypothesis Test Results (live, 2026-10-08)
 
@@ -310,3 +329,11 @@ itself).
 - No strategy in this registry has been wired into `src/decision/fusion.py`
   or any live decision path — that integration is explicitly Priority 5's
   job (the adaptive meta-model/strategy selector), not this one.
+- Strategy A's original "significant for all 3 instruments" claim does NOT
+  hold on a genuine out-of-sample holdout (Section 3 above) — only AAPL
+  replicates; NVDA and MSFT do not. Combined with the unprofitable real
+  backtest (also Section 3), Strategy A's selector eligibility was pulled
+  (`src/models/strategy_selector.py`, `ELIGIBLE_STRATEGIES = ()`).
+- Holdout testing (Priority 6) has only been applied to Strategy A so far
+  — Strategies C/F/H's results above have NOT been re-checked against a
+  genuine holdout and could have the same in-sample-only fragility.

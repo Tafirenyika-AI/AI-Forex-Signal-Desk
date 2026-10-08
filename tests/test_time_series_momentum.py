@@ -23,7 +23,11 @@ from sqlalchemy import create_engine, insert
 
 from src.data.db import candles as candles_table
 from src.data.db import metadata
-from src.strategies.time_series_momentum import current_momentum_signal, evaluate_momentum_hypothesis
+from src.strategies.time_series_momentum import (
+    current_momentum_signal,
+    evaluate_momentum_hypothesis,
+    evaluate_momentum_hypothesis_with_holdout,
+)
 
 START = datetime(2020, 1, 1, tzinfo=timezone.utc)
 
@@ -142,3 +146,37 @@ def test_current_signal_is_honest_none_with_too_little_history(engine):
     signal = current_momentum_signal(engine, "alpaca", "TEST", "D", lookback_days=84)
     assert signal.direction is None
     assert signal.trailing_return is None
+
+
+def test_holdout_split_replicates_on_a_uniformly_persistent_series(engine):
+    # A real, uniform finding should hold in BOTH the development portion
+    # and the untouched final holdout -- neither is an artifact of only
+    # ever having looked at the whole sample at once.
+    _seed_daily_closes(engine, _persistent_series())
+    result = evaluate_momentum_hypothesis_with_holdout(
+        engine, "alpaca", "TEST", "D", lookback_days=5, holding_days=5, holdout_fraction=0.2,
+    )
+    assert result["development"].hit_rate > 0.7
+    assert result["holdout"].hit_rate > 0.7
+    assert result["development"].n > 0 and result["holdout"].n > 0
+
+
+def test_holdout_split_catches_a_real_regime_change_development_missed(engine):
+    # Persistent for the first 400 days, then genuinely anti-persistent for
+    # the final 100 (exactly a 0.2 holdout fraction) -- a real finding from
+    # development alone would NOT replicate on this holdout, and the split
+    # must actually show that, not paper over it.
+    closes = _persistent_series(n_blocks=10, block_days=40) + _anti_persistent_series(n_days=100, period_days=10)
+    _seed_daily_closes(engine, closes)
+    result = evaluate_momentum_hypothesis_with_holdout(
+        engine, "alpaca", "TEST", "D", lookback_days=5, holding_days=5, holdout_fraction=0.2,
+    )
+    assert result["development"].hit_rate > 0.7
+    assert result["holdout"].hit_rate < 0.3
+
+
+def test_holdout_split_with_insufficient_history_returns_matching_honest_empties(engine):
+    _seed_daily_closes(engine, [100.0, 101.0, 102.0])
+    result = evaluate_momentum_hypothesis_with_holdout(engine, "alpaca", "TEST", "D", lookback_days=5, holding_days=5)
+    assert result["development"].n == 0
+    assert result["holdout"].n == 0

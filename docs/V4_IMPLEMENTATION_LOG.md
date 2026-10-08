@@ -344,3 +344,35 @@ Both fixed with dedicated regression tests reproducing the exact real bug patter
 - Re-adding any strategy requires BOTH a significant hypothesis-test result AND a profitable backtest result (the new bar this correction established) — documented in the module's own top-of-file docstring and the `ELIGIBLE_STRATEGIES` comment so a future session doesn't accidentally revert to the weaker, hit-rate-only bar.
 
 **Next**: per "go on" — the remaining Priority 6 items, Priority 7 (dashboard restructure), or trying a different Strategy A implementation (different entry cadence/sizing) to see if a profitable backtest variant exists before concluding the sign-prediction can't be monetized at all.
+
+---
+
+## Priority 6 (second slice) — Genuine held-out final test window — **DONE**
+
+2026-10-08, continuing per "go on" after the eligibility correction. Covers the brief's own Section 14/15 "untouched final holdout" item, applied directly to re-check the one finding that mattered most: Strategy A's own validated result.
+
+**`src/strategies/time_series_momentum.py`**: refactored the existing `evaluate_momentum_hypothesis()` into a shared `_build_merged_returns()` + `_score_merged()` pair (pure refactor, verified against the full existing test suite before adding anything new), then added `evaluate_momentum_hypothesis_with_holdout()` — splits the SAME merged trailing/forward-return rows chronologically (never shuffled, since a real holdout must be a genuinely later time period, not a random sample that could still leak lookback/holding windows across the boundary) into a development portion (earliest 80%) and an untouched final holdout (most recent 20%), scoring each independently.
+
+**Real, major finding — the original Strategy A claim does not survive genuine out-of-sample testing**: re-ran the validated 84d/30d configuration with this split against real NVDA/AAPL/MSFT H4 history:
+
+| Instrument | Development z | Holdout z |
+|---|---|---|
+| NVDA | 3.17 | **-0.48** |
+| AAPL | 3.81 | **2.32** |
+| MSFT | 8.19 | **-1.19** |
+
+**Only AAPL's finding replicates.** NVDA and MSFT's original full-sample significance (z=2.55/6.32 in the Section 3 table) flips to non-significant-or-negative on data genuinely never touched during the original analysis — strong evidence the original "significant across all 3" claim was, at least partly, an in-sample artifact of testing the entire history at once. This is independent of (and consistent with) the unprofitable-backtest finding from Priority 6's first slice — two separate, real analyses now both point the same direction.
+
+**`docs/V4_STRATEGY_RESEARCH.md` corrected**: added a ⚠ correction note directly above the original Section 3 table (so a reader can't miss it by only skimming the table), a full holdout results table, and an updated Known Limitations entry. Also flagged that Strategies C/F/H have NOT yet been re-checked against a genuine holdout and could have the same fragility — disclosed, not assumed away.
+
+**Files changed**: `src/strategies/time_series_momentum.py` (refactor + new function), `docs/V4_STRATEGY_RESEARCH.md` (correction + holdout table), `docs/V4_ARCHITECTURE.md` (Priority 6 status), `tests/test_time_series_momentum.py` (+3 tests).
+
+**Tests**: 3 new (a uniformly-persistent series replicating on both halves, a deliberate regime-change series where development and holdout genuinely disagree, and an insufficient-history edge case), all passing — plus all 7 pre-existing tests in the same file re-confirmed passing after the refactor. Full suite: **463/463 passing** (460 prior + 3 new), zero regressions.
+
+**Execution-impact assessment**: zero — read-only research function, no broker call, no write.
+
+**Known limitations, disclosed not hidden**:
+- Holdout testing has only been applied to Strategy A — C/F/H's results are not yet re-validated this way and could be similarly fragile.
+- The 80/20 development/holdout split and the specific 84d/30d config are both inherited from the original analysis, not independently re-derived — a fully rigorous walk-forward approach (re-fitting/re-selecting the lookback on development alone, then testing on holdout) is more thorough than this single fixed-config split and remains future work.
+
+**Next**: per "go on" — applying the same holdout discipline to C/F/H, the remaining Priority 6 items (partial fills, corporate actions, session-awareness), or Priority 7 (dashboard restructure).

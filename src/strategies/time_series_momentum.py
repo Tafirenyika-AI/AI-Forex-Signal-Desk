@@ -66,19 +66,13 @@ def _load_closes(engine: Engine, broker: str, instrument: str, granularity: str)
     return pd.DataFrame(rows, columns=["time", "close"]).drop_duplicates(subset="time")
 
 
-def evaluate_momentum_hypothesis(
-    engine: Engine, broker: str, instrument: str, granularity: str,
-    lookback_days: int, holding_days: int, entry_noise_floor_std: float = 0.0,
-) -> MomentumHypothesisResult:
-    """Pure research test against real stored candle history -- no broker
-    call, no cost model, no sizing. `entry_noise_floor_std`: only count a
-    row as a real "entry" if |trailing return| exceeds this many trailing
-    standard deviations of trailing returns (0.0 = every row with a
-    non-zero trailing return counts, the loosest possible filter)."""
-    closes = _load_closes(engine, broker, instrument, granularity)
-    if len(closes) < 10:
-        return MomentumHypothesisResult(instrument, lookback_days, holding_days, 0, None, None, None)
-
+def _build_merged_returns(closes: pd.DataFrame, lookback_days: int, holding_days: int) -> pd.DataFrame:
+    """The trailing/forward log-return pair per row, nearest-timestamp
+    matched. Pulled out of evaluate_momentum_hypothesis() so both the
+    full-sample test and the chronological holdout split (see
+    evaluate_momentum_hypothesis_with_holdout below, V4 Priority 6) build
+    this identically rather than duplicating the merge_asof logic."""
+    closes = closes.copy()
     closes["log_close"] = np.log(closes["close"])
     trail_target = closes[["time"]].copy()
     trail_target["lookback_time"] = trail_target["time"] - timedelta(days=lookback_days)
@@ -103,7 +97,12 @@ def evaluate_momentum_hypothesis(
     )
     merged["trailing_return"] = merged["log_close"] - merged["log_close_trail"]
     merged["forward_return"] = merged["log_close_fwd"] - merged["log_close"]
+    return merged
 
+
+def _score_merged(
+    merged: pd.DataFrame, instrument: str, lookback_days: int, holding_days: int, entry_noise_floor_std: float,
+) -> MomentumHypothesisResult:
     noise_floor = entry_noise_floor_std * merged["trailing_return"].std() if entry_noise_floor_std > 0 else 0.0
     eligible = merged[merged["trailing_return"].abs() > noise_floor].copy()
     eligible = eligible[eligible["forward_return"] != 0]  # exclude rows where no later bar exists at all (holding window beyond available history collapses to the same bar)
@@ -123,6 +122,58 @@ def evaluate_momentum_hypothesis(
     mean_move_in_favor = float((direction * eligible["forward_return"]).mean())
 
     return MomentumHypothesisResult(instrument, lookback_days, holding_days, n, hit_rate, z_score, mean_move_in_favor)
+
+
+def evaluate_momentum_hypothesis(
+    engine: Engine, broker: str, instrument: str, granularity: str,
+    lookback_days: int, holding_days: int, entry_noise_floor_std: float = 0.0,
+) -> MomentumHypothesisResult:
+    """Pure research test against real stored candle history -- no broker
+    call, no cost model, no sizing. `entry_noise_floor_std`: only count a
+    row as a real "entry" if |trailing return| exceeds this many trailing
+    standard deviations of trailing returns (0.0 = every row with a
+    non-zero trailing return counts, the loosest possible filter)."""
+    closes = _load_closes(engine, broker, instrument, granularity)
+    if len(closes) < 10:
+        return MomentumHypothesisResult(instrument, lookback_days, holding_days, 0, None, None, None)
+
+    merged = _build_merged_returns(closes, lookback_days, holding_days)
+    return _score_merged(merged, instrument, lookback_days, holding_days, entry_noise_floor_std)
+
+
+def evaluate_momentum_hypothesis_with_holdout(
+    engine: Engine, broker: str, instrument: str, granularity: str,
+    lookback_days: int, holding_days: int, entry_noise_floor_std: float = 0.0,
+    holdout_fraction: float = 0.2,
+) -> dict[str, MomentumHypothesisResult]:
+    """V4 Priority 6 (brief Section 14/15: "walk-forward evaluation and an
+    untouched final holdout"). The full-sample result this module already
+    reported (docs/V4_STRATEGY_RESEARCH.md Section 3) was found by testing
+    the ENTIRE available history at once -- no part of it was held out and
+    genuinely untouched during that original analysis. This splits the
+    SAME merged trailing/forward-return rows chronologically (never
+    shuffled -- a holdout must be a real, later time period, not a random
+    sample that could still leak lookback/holding windows across the
+    boundary) into a `development` portion (the earliest
+    `1 - holdout_fraction`) and a `holdout` portion (the most recent
+    `holdout_fraction`), scoring each independently. A real finding should
+    replicate on the holdout; one that only held in development was likely
+    an artifact of having tuned/discovered the configuration against that
+    same data."""
+    closes = _load_closes(engine, broker, instrument, granularity)
+    if len(closes) < 10:
+        empty = MomentumHypothesisResult(instrument, lookback_days, holding_days, 0, None, None, None)
+        return {"development": empty, "holdout": empty}
+
+    merged = _build_merged_returns(closes, lookback_days, holding_days).sort_values("time").reset_index(drop=True)
+    split_idx = int(len(merged) * (1 - holdout_fraction))
+    development = merged.iloc[:split_idx]
+    holdout = merged.iloc[split_idx:]
+
+    return {
+        "development": _score_merged(development, instrument, lookback_days, holding_days, entry_noise_floor_std),
+        "holdout": _score_merged(holdout, instrument, lookback_days, holding_days, entry_noise_floor_std),
+    }
 
 
 def current_momentum_signal(
