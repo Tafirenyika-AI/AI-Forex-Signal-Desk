@@ -306,11 +306,17 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
                                  "initially positive earnings surprise) before the holding window expires.",
         expected_holding_period="Days to a few weeks — PEAD is specifically a MEDIUM-horizon drift effect, longer "
                                  "than Strategy D/E's intraday scope.",
-        data_requirements="Already available: src/equity/sec_edgar.py (structured fundamentals, point-in-time), "
-                           "src/data/db.py's company_events table (earnings/guidance/M&A calendar, Equity V2 "
-                           "Phase 3), src/news/equity_news.py. A real 'surprise magnitude' feature (actual vs. "
-                           "consensus/trend estimate) still needs to be derived from these — not yet computed as "
-                           "its own feature anywhere in this codebase.",
+        data_requirements="RESOLVED 2026-10-08, with 2 real corrections: (1) company_events — confirmed live to be "
+                           "COMPLETELY EMPTY (0 rows), a known, already-disclosed gap carried from Equity V2 Phase "
+                           "3 (src/risk/equity_governor_extensions.py's own upcoming_earnings_lockout_gate "
+                           "docstring already says so). (2) equity_news's 12 real EARNINGS-classified articles are "
+                           "all multi-ticker market-roundup pieces, not usable per-ticker event triggers. Built "
+                           "src/strategies/earnings_drift.py using company_fundamentals.filed_at directly (a real, "
+                           "point-in-time-correct timestamp) with a YoY EarningsPerShareDiluted change as a "
+                           "disclosed consensus-estimate proxy (no paid consensus feed exists). Found and fixed a "
+                           "real bug along the way: Q4/fiscal-year-end facts share a period_end with BOTH the true "
+                           "single quarter AND the cumulative annual figure — an early version mixed them "
+                           "(MSFT's real quarterly EPS showed as 17.95, its actual annual figure).",
         transaction_costs="Low turnover (event-triggered, not scheduled) but real event-day slippage risk — "
                            "entries right after an earnings print often face wider spreads than normal.",
         failure_conditions="Drift direction doesn't persist past the first 1-2 days (i.e., the surprise is "
@@ -321,6 +327,8 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
                              "project's own realistic event-detection latency, not from the event timestamp "
                              "itself — otherwise the validation would silently assume faster detection than the "
                              "system actually has.",
+        status="HYPOTHESIS_TESTED",
+        implementation_ref="src/strategies/earnings_drift.py",
     ),
     "H": StrategySpec(
         code="H", name="Sector Rotation",

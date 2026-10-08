@@ -26,7 +26,7 @@ criteria.
 | D | Opening-Range Breakout | Volume-confirmed opening-range breaks persist through the session | RESEARCH_SPEC_ONLY |
 | E | VWAP Mean Reversion | Statistically stretched price reverts to session VWAP under calm regimes | **HYPOTHESIS_TESTED** (real result below — suggestive full-sample, inconclusive once split) |
 | F | Volatility Breakout | Volatility compression is followed by a directionally-persistent expansion | **HYPOTHESIS_TESTED** (real result below) |
-| G | Earnings/Event-Driven | Earnings surprises drift in the surprise's direction (PEAD) | RESEARCH_SPEC_ONLY |
+| G | Earnings/Event-Driven | Earnings surprises drift in the surprise's direction (PEAD) | **HYPOTHESIS_TESTED** (real result below — sample too small to conclude either way) |
 | H | Sector Rotation | Regime-conditioned sector relative strength predicts continued rotation | **HYPOTHESIS_TESTED** (real result below — the data says the OPPOSITE of the hypothesis) |
 | I | Statistical Pairs Trading | A cointegrated pair's stretched spread reverts | **HYPOTHESIS_TESTED** (real result below — NO candidate pair is genuinely cointegrated; a dangerous false-positive trap found along the way) |
 | J | Crypto Momentum and Volatility | A/F's hypotheses, re-validated separately for 24/7 crypto | **HYPOTHESIS_TESTED** (real result below — the equity config actively REVERSES sign on crypto; no stable crypto-specific config found either) |
@@ -95,11 +95,15 @@ Drift: Delayed Price Response or Risk Premium?" *Journal of Accounting
 Research*, 27, 1–36.** The paper that named post-earnings-announcement
 drift (PEAD) — a documented tendency for price to continue drifting in an
 earnings surprise's direction for weeks after the announcement, a
-longstanding challenge to market efficiency. — Our own backtest: not yet
-run. Known gap: no "surprise magnitude" feature (actual vs. consensus/
-trend) is computed anywhere in this codebase yet, despite the raw SEC
-EDGAR/company_events/news inputs it would be derived from already being
-real and live (Equity V2 Phases 3/4/6).
+longstanding challenge to market efficiency. — Our own hypothesis test:
+see Section 12 below — real, honest sample sizes (n=6-7 per instrument,
+bounded by this project's own ~2 years of backfilled history) are too
+small to confirm or deny the effect. Real correction: `company_events`
+(Equity V2 Phase 3) is confirmed completely empty (0 rows) — a known,
+already-disclosed gap, not a new one — and `equity_news`'s "EARNINGS" tag
+turned out to match only multi-ticker roundup articles, not usable
+per-ticker event triggers. Used `company_fundamentals.filed_at` directly
+instead (real, point-in-time-correct SEC filing timestamps).
 
 ### Trend Following, Opening-Range Breakout, VWAP Mean Reversion, Volatility
 Breakout, Sector Rotation, Crypto Momentum (Strategies C, D, E, F, H, J)
@@ -487,20 +491,73 @@ along the way is itself valuable, disclosed evidence for why this
 strategy's own two-part validation criteria (cointegration AND profitable
 reversion) must never be relaxed to "reversion signal alone."
 
-## 11. Known limitations, disclosed not hidden
+## 12. Strategy G — Real Hypothesis Test Results (live, 2026-10-08)
 
-- 2 of 10 strategy families (D, G) are `RESEARCH_SPEC_ONLY` — specs
-  exist, nothing has been run against real data yet. This is deliberate,
+Ran `src/strategies/earnings_drift.py`'s `evaluate_earnings_drift_hypothesis()`
+against real company_fundamentals + H4 candle history for NVDA/AAPL/MSFT.
+"Surprise" = YoY change in real, filed, single-quarter `EarningsPerShareDiluted`
+(no analyst-consensus feed exists — a disclosed proxy, not a claim of
+matching real consensus). Event anchor = `filed_at` (a few days after the
+real earnings release, but a genuinely knowable, point-in-time-correct
+timestamp — not the news-publish-time proxy this project's existing
+earnings-lockout gate uses, which turned out not to have usable per-
+ticker data for this purpose, see Section 2 above).
+
+| Instrument | Holding (days) | n | Hit rate | z-score |
+|---|---|---|---|---|
+| NVDA | 5 | 6 | 33.3% | -0.82 |
+| NVDA | 10 | 7 | 28.6% | -1.13 |
+| NVDA | 20 | 7 | 28.6% | -1.13 |
+| AAPL | 5 | 6 | 33.3% | -0.82 |
+| AAPL | 10 | 6 | 50.0% | 0.00 |
+| AAPL | 20 | 6 | 66.7% | 0.82 |
+| MSFT | 5 | 6 | 16.7% | -1.63 |
+| MSFT | 10 | 6 | 16.7% | -1.63 |
+| MSFT | 20 | 6 | 16.7% | -1.63 |
+
+**Real, disclosed finding**: no result reaches conventional significance
+at any instrument/horizon (`|z| < 1.7` everywhere), and sample sizes
+(n=6-7) are genuinely too small to trust either way — this project's own
+~2 years of real backfilled candle history only covers 6-7 real quarterly
+earnings events with a valid prior-year comparison per instrument.
+MSFT's direction is at least consistently negative across all three
+holding periods (worth noting, not over-interpreting given n=6). This is
+an honest "insufficient data," not a confirmed null result the way
+Strategy H's was — more real history accumulating over time would make
+this test meaningfully more powerful without any code change.
+
+**Real bug found and fixed while building this, before it ever ran
+against real data incorrectly**: the first version of `_load_eps_events`
+grouped only by `period_end`, which a Q4/fiscal-year-end shares with BOTH
+the true single-quarter EPS fact AND SEC EDGAR's own cumulative annual
+fact (same real XBRL ambiguity `src/data/db.py`'s own `company_fundamentals`
+docstring already warns about). This produced nonsensical "quarterly" EPS
+values when checked against real data (MSFT showing "17.95," its actual
+annual figure, not one quarter's ~$3-5). Fixed by filtering to genuine
+single-quarter facts (`period_end - period_start` between 80-100 days)
+before grouping — caught by inspecting the real loaded values before
+trusting the statistical test built on top of them, not by a failing
+test (the synthetic test fixtures didn't happen to include this specific
+annual/quarterly collision until a dedicated regression test was added
+for it afterward).
+
+## 13. Known limitations, disclosed not hidden
+
+- 1 of 10 strategy families (D) is `RESEARCH_SPEC_ONLY` — its spec
+  exists, nothing has been run against real data yet (it needs deeper
+  intraday backfill than currently exists). This is deliberate,
   incremental scoping, not an oversight.
-- Of the 8 strategies now `HYPOTHESIS_TESTED` (A/B/C/E/F/H/I/J), holdout
+- Of the 9 strategies now `HYPOTHESIS_TESTED` (A/B/C/E/F/G/H/I/J), holdout
   testing has only been applied to A/B/J so far — and in every one of
   those 3 cases, the apparent full-sample significance did NOT survive
   (only Strategy A's AAPL result held up; B and J did not replicate at
   all). C showed no signal even full-sample; E's one standout result
   was inconclusive once split; F's one significant result (AAPL, n=8)
   and H's contradicting result have NOT yet been holdout-checked and
-  could have the same fragility; I found no cointegrated pair at all, so
-  there is nothing left to holdout-check for it in this universe. The
+  could have the same fragility; G's sample sizes (n=6-7) were too
+  small to reach significance either way; I found no cointegrated pair
+  at all, so there is nothing left to holdout-check for it in this
+  universe. The
   honest overall state of this registry today: no strategy has cleared a
   real, holdout-robust bar for trading.
 - Only 3 of the brief's 8 named equity candidates have any backfilled
