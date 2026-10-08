@@ -85,8 +85,9 @@ Ordered by: (a) safety-critical first, (b) foundational/reusable-by-everything-e
 ### Priority 5 — Adaptive meta-model / strategy selector upgrade (Section 10/11) — **DONE** (first slice, 2026-10-08)
 - **Built**: `src/models/strategy_selector.py` — selects AMONG strategies (not Phase 10's `fit_meta`/`predict_meta` component-blending, a different mechanism for a different job), gated by REAL evidence: only strategies with a recorded, statistically significant finding (docs/V4_STRATEGY_RESEARCH.md) are eligible at all — currently just Strategy A, since C/F/H's own tests came back null/too-small/contradicted. Full detail and live results in `docs/V4_IMPLEMENTATION_LOG.md`'s Priority 5 entry. Extending `fit_meta`/`predict_meta` itself to blend ACROSS multiple eligible strategies remains future work once more than one strategy clears the evidence bar.
 
-### Priority 6 — Portfolio backtesting extensions (Section 14/15)
-- Extend `src/backtest/portfolio_engine.py`: partial fills, corporate-action awareness, explicit session/24-7 handling, short-margin constraints, named Sharpe/Sortino/profit-factor/turnover fields, a true held-out final test window never touched during strategy development.
+### Priority 6 — Portfolio backtesting extensions (Section 14/15) — **FIRST SLICE DONE** (2026-10-08)
+- **Built**: `src/backtest/performance_metrics.py` — named Sharpe/Sortino/profit-factor/win-rate/turnover/trade-expectancy fields, as a pure additive post-processing layer over `PortfolioBacktestResult` (not touching the already-tested core simulation). Live-verified with a real backtest of Strategy A's own signals — found that a naive implementation of its validated sign-prediction is actually UNPROFITABLE (net return -4.08%, profit factor 0.88), a real and important finding; see `docs/V4_STRATEGY_RESEARCH.md`'s Strategy A section and `docs/V4_IMPLEMENTATION_LOG.md`'s Priority 6 entry.
+- **Still open**: partial fills, corporate-action awareness, explicit session/24-7 handling, short-margin constraints, a true held-out final test window — not done in this slice.
 
 ### Priority 7 — Dashboard restructure (Section 19)
 - Reorganize `src/dashboard/app.py`'s tab list into the 5 named groups, folding the existing "Equity Intelligence" tab's content into "Trading Performance"/"Risk and Operations" rather than duplicating it.

@@ -297,3 +297,26 @@ Both fixed with dedicated regression tests reproducing the exact real bug patter
 - Not wired into `run_loop.py`'s live cycle or any dashboard view — a separate, explicit decision point, same posture as every other V4 component this session.
 
 **Next**: per "go on" — extending `fit_meta`/`predict_meta` to blend across multiple eligible strategies (once more than one clears the evidence bar), wiring richer Section 10 inputs (portfolio exposure, news risk), or moving to Priority 6+ (portfolio backtesting extensions, dashboard restructure). Worth checking with the user given each represents a different scope.
+
+---
+
+## Priority 6 (first slice) — Named performance metrics for the portfolio backtester — **DONE**
+
+2026-10-08. User chose "keep going" toward Priority 6+. Covers one concrete, bounded item from the architecture doc's own Priority 6 list ("named Sharpe/Sortino/profit-factor/turnover fields") rather than the full, much larger set (partial fills, corporate actions, session-awareness, holdout splits — all still open, disclosed below).
+
+**`src/backtest/performance_metrics.py`**: `compute_performance_metrics(result: PortfolioBacktestResult) -> PerformanceMetrics` — win_rate, profit_factor, trade_expectancy_pct, turnover, sharpe_ratio, sortino_ratio. Deliberately a pure, additive post-processing function over an already-produced `PortfolioBacktestResult`, not new fields baked into that dataclass or `run_portfolio_backtest()` itself — the core simulation (Equity V2 Phase 12) is already tested and untouched. Sharpe/Sortino annualize using an EMPIRICAL periods-per-year derived from the equity curve's own real timestamps, not a hardcoded 252 — `run_portfolio_backtest`'s timeline is an irregular union of whatever candle granularity the input signals actually used (H1/H4/D), so a fixed daily-bar constant would misrepresent the real annualized figure.
+
+**Real, important finding from live verification, not from inspection**: built 129 real signals from Strategy A's own validated sign-prediction direction (every ~30 bars across NVDA/AAPL/MSFT's real H4 history, standard ATR-based stop/target sizing reusing `src/decision/fusion.py`'s own `ATR_STOP_MULTIPLIER`/`REWARD_RISK_MULTIPLE` convention) and ran them through the real portfolio backtester. **Result: net return -4.08%, win rate 42.9%, profit factor 0.88, Sharpe -0.39, Sortino -0.35 — a naive implementation of Strategy A's own validated sign-prediction is actually UNPROFITABLE.** This doesn't contradict Strategy A's earlier hit-rate finding (both are real) — it's exactly the gap the registry's own `HYPOTHESIS_TESTED` vs `BACKTESTED` status ladder exists to catch: predicting a return's sign correctly more often than chance doesn't by itself produce a profitable trading rule once a real stop/target/entry-cadence is attached. Documented prominently in `docs/V4_STRATEGY_RESEARCH.md`'s Strategy A section as a reason to treat its current `src/models/strategy_selector.py` eligibility as provisional — no live-safety impact (the selector is shadow-only/no-broker-call by construction regardless), but a real, disclosed research finding that should gate any future move toward `BACKTESTED`/`SHADOW` status.
+
+**Files changed**: `src/backtest/performance_metrics.py` (new), `docs/V4_ARCHITECTURE.md` (Priority 6 marked first-slice-done), `docs/V4_STRATEGY_RESEARCH.md` (Strategy A section, real backtest finding), `tests/test_performance_metrics.py` (new, 7 tests).
+
+**Tests**: 7 new, all passing — including a deliberate Sharpe-vs-Sortino contrast test (asymmetric upside/downside volatility) confirming Sortino correctly ignores upside swings Sharpe penalizes. Full suite: **459/459 passing** (452 prior + 7 new), zero regressions.
+
+**Execution-impact assessment**: zero. Pure computation over already-produced backtest results; no broker call, no DB write, no live wiring.
+
+**Known limitations, disclosed not hidden**:
+- Priority 6's larger items (partial fills, corporate-action awareness, explicit session/24-7 handling, short-margin constraints, a true held-out final test window) remain open — this slice covers only the named-metrics gap.
+- The 129-signal verification backtest used a simple, uniform "every 30 bars" entry cadence and standard ATR sizing — not necessarily the best or only way to trade Strategy A's signal; the unprofitable result is real evidence against THIS naive implementation, not a final, exhaustive verdict on the underlying sign-prediction's tradeability.
+- `profit_factor` returns `inf` (not a crash, and not `None`) when every closed trade won — a real, correctly-handled edge case, tested explicitly.
+
+**Next**: per "go on" — the remaining Priority 6 items, Priority 7 (dashboard restructure), or reconsidering Strategy A's selector eligibility given this session's own new backtest finding. Worth checking with the user given the real-finding above has a direct bearing on Priority 5's existing selector.
