@@ -28,7 +28,7 @@ criteria.
 | F | Volatility Breakout | Volatility compression is followed by a directionally-persistent expansion | **HYPOTHESIS_TESTED** (real result below) |
 | G | Earnings/Event-Driven | Earnings surprises drift in the surprise's direction (PEAD) | RESEARCH_SPEC_ONLY |
 | H | Sector Rotation | Regime-conditioned sector relative strength predicts continued rotation | **HYPOTHESIS_TESTED** (real result below — the data says the OPPOSITE of the hypothesis) |
-| I | Statistical Pairs Trading | A cointegrated pair's stretched spread reverts | RESEARCH_SPEC_ONLY |
+| I | Statistical Pairs Trading | A cointegrated pair's stretched spread reverts | **HYPOTHESIS_TESTED** (real result below — NO candidate pair is genuinely cointegrated; a dangerous false-positive trap found along the way) |
 | J | Crypto Momentum and Volatility | A/F's hypotheses, re-validated separately for 24/7 crypto | **HYPOTHESIS_TESTED** (real result below — the equity config actively REVERSES sign on crypto; no stable crypto-specific config found either) |
 
 `status` values (see `StrategySpec`'s own docstring for the full ladder):
@@ -442,20 +442,67 @@ figures that don't hold up once genuinely checked), though this one reads
 more as "insufficient data to tell" than the clean contradictions seen in
 A/B/J.
 
-## 10. Known limitations, disclosed not hidden
+## 10. Strategy I — Real Cointegration Test Results (live, 2026-10-08)
 
-- 3 of 10 strategy families (D, G, I) are `RESEARCH_SPEC_ONLY` — specs
+Built `src/strategies/pairs_trading.py` with a real Augmented
+Engle-Granger cointegration test (`statsmodels.tsa.stattools.coint`, a
+newly added real dependency — see `requirements.txt` — not a hand-rolled
+approximation of ADF critical values). Tested 6 real candidate pairs
+against real H4 history, per the registry's own suggested candidates
+(near-identical ETF pairs, sector-proxy pairs, same-broad-sector
+equities):
+
+| Pair | Cointegration p-value | Mechanical reversion n / hit_rate / z |
+|---|---|---|
+| GLD / IAU | 0.669 | 53 / 98.1% / **7.01** |
+| XLE / USO | — (USO H4 gap, see Priority 4) | n=0 |
+| SPY / QQQ | 0.178 | 210 / 51.4% / 0.41 |
+| AAPL / MSFT | 0.897 | 171 / 44.4% / -1.45 |
+| XLK / QQQ | 0.549 | 152 / 55.9% / 1.46 |
+| AAPL / NVDA | 0.416 | 130 / 72.3% / **5.09** |
+| MSFT / NVDA | 0.630 | 179 / 52.0% / 0.52 |
+
+**None of the 6 testable pairs shows genuine cointegration** (every
+p-value is well above the conventional 0.05 threshold — even GLD/IAU,
+near-identical gold exposure, fails at p=0.669).
+
+**A real, important, dangerous false-positive trap found along the way**:
+GLD/IAU's MECHANICAL reversion test alone looks spectacular (z=7.01,
+98.1% hit rate) and AAPL/NVDA's looks very strong too (z=5.09) — but
+BOTH pairs fail the formal cointegration prerequisite. This is exactly
+why the registry's own validation criteria require the cointegration
+test to pass FIRST, not a reversion-test result alone: a rolling z-score
+of ANY two price series' difference can look like a strong "reversion"
+signal purely from the normalization itself, with no genuine statistical
+link underneath it. Trading GLD/IAU or AAPL/NVDA on the mechanical signal
+alone, without the cointegration gate, would have been a textbook
+spurious-regression mistake — precisely the failure mode Gatev, Goetzmann
+& Rouwenhorst's own methodology (and this registry's own validation
+criteria) exists to prevent.
+
+**Conclusion for Strategy I**: no validated pair exists in this project's
+current real, backfilled universe. This is a genuine, useful null result,
+not a failure of the research process — and the false-positive trap found
+along the way is itself valuable, disclosed evidence for why this
+strategy's own two-part validation criteria (cointegration AND profitable
+reversion) must never be relaxed to "reversion signal alone."
+
+## 11. Known limitations, disclosed not hidden
+
+- 2 of 10 strategy families (D, G) are `RESEARCH_SPEC_ONLY` — specs
   exist, nothing has been run against real data yet. This is deliberate,
   incremental scoping, not an oversight.
-- Of the 6 strategies now `HYPOTHESIS_TESTED` (A/B/C/F/H/J), holdout
+- Of the 8 strategies now `HYPOTHESIS_TESTED` (A/B/C/E/F/H/I/J), holdout
   testing has only been applied to A/B/J so far — and in every one of
   those 3 cases, the apparent full-sample significance did NOT survive
   (only Strategy A's AAPL result held up; B and J did not replicate at
-  all). C showed no signal even full-sample; F's one significant result
-  (AAPL, n=8) and H's contradicting result have NOT yet been holdout-
-  checked and could have the same fragility. The honest overall state of
-  this registry today: no strategy has cleared a real, holdout-robust bar
-  for trading.
+  all). C showed no signal even full-sample; E's one standout result
+  was inconclusive once split; F's one significant result (AAPL, n=8)
+  and H's contradicting result have NOT yet been holdout-checked and
+  could have the same fragility; I found no cointegrated pair at all, so
+  there is nothing left to holdout-check for it in this universe. The
+  honest overall state of this registry today: no strategy has cleared a
+  real, holdout-robust bar for trading.
 - Only 3 of the brief's 8 named equity candidates have any backfilled
   candle history at all (see Section 1 above) — a real gap for Priority 4.
 - 2 of the 11 sector ETFs (XLE, XLF) have zero backfilled H4 history despite

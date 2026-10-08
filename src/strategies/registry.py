@@ -384,10 +384,11 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
                                  "the pair's long-run relationship itself may no longer hold (corporate actions, "
                                  "business-model divergence, etc.).",
         expected_holding_period="Days to weeks, until reversion or the cointegration-break invalidation fires.",
-        data_requirements="PARTIALLY MISSING: no cointegration-testing code exists anywhere in this codebase yet "
-                           "(checked src/features/ and src/models/ — nothing). Needs a new statistical module "
-                           "(e.g. an Engle-Granger or Johansen test) — genuinely new work, not a reuse of existing "
-                           "infrastructure like most of the other strategies here.",
+        data_requirements="RESOLVED 2026-10-08: built src/strategies/pairs_trading.py using a real Augmented "
+                           "Engle-Granger test (statsmodels, newly added dependency) — genuinely new statistical "
+                           "work, not a reuse of existing infrastructure like most other strategies here. Result: "
+                           "see docs/V4_STRATEGY_RESEARCH.md Section 10 — none of 6 real candidate pairs tested "
+                           "showed genuine cointegration.",
         transaction_costs="Two-legged (double the number of orders per round trip vs. a single-instrument "
                            "strategy) — materially higher cost drag per signal than Strategies A/C/F.",
         failure_conditions="The pair fails a genuine, pre-registered cointegration test (not cherry-picked after "
@@ -396,6 +397,8 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
         validation_criteria="A real, formal cointegration test passes on held-out data (not just the window used "
                              "to discover the pair), AND the reversion-based trading rule is profitable net of "
                              "two-legged transaction costs out-of-sample.",
+        status="HYPOTHESIS_TESTED",
+        implementation_ref="src/strategies/pairs_trading.py",
     ),
     "J": StrategySpec(
         code="J", name="Crypto Momentum and Volatility",
