@@ -29,7 +29,7 @@ criteria.
 | G | Earnings/Event-Driven | Earnings surprises drift in the surprise's direction (PEAD) | RESEARCH_SPEC_ONLY |
 | H | Sector Rotation | Regime-conditioned sector relative strength predicts continued rotation | **HYPOTHESIS_TESTED** (real result below — the data says the OPPOSITE of the hypothesis) |
 | I | Statistical Pairs Trading | A cointegrated pair's stretched spread reverts | RESEARCH_SPEC_ONLY |
-| J | Crypto Momentum and Volatility | A/F's hypotheses, re-validated separately for 24/7 crypto | RESEARCH_SPEC_ONLY |
+| J | Crypto Momentum and Volatility | A/F's hypotheses, re-validated separately for 24/7 crypto | **HYPOTHESIS_TESTED** (real result below — the equity config actively REVERSES sign on crypto; no stable crypto-specific config found either) |
 
 `status` values (see `StrategySpec`'s own docstring for the full ladder):
 `RESEARCH_SPEC_ONLY` → `HYPOTHESIS_TESTED` → `BACKTESTED` → `SHADOW` →
@@ -304,19 +304,76 @@ investigated further in this pass (root-causing exactly why the backfill
 script skipped these two is separate work from the strategy research
 itself).
 
-## 7. Known limitations, disclosed not hidden
+## 7. Strategy J — Real Hypothesis Test Results, WITH holdout (live, 2026-10-08)
 
-- 4 of 10 strategy families are `RESEARCH_SPEC_ONLY` — specs exist, nothing
-  has been run against real data yet. This is deliberate, incremental
-  scoping (confirmed with the user before starting Priority 3's largest
-  item), not an oversight.
+Strategy J's own spec is explicit: equity-validated results must not be
+assumed to transfer to crypto — this needed its own independent test, not
+an inference. Reused Strategy A's `evaluate_momentum_hypothesis`/
+`evaluate_momentum_hypothesis_with_holdout` and Strategy F's
+`evaluate_volatility_breakout_hypothesis` directly against BTC/USD and
+ETH/USD's real H4 history (4,575 real rows each) — no new code needed,
+per the registry's own spec.
+
+**Momentum, full sample, 3 lookback/holding configs** (same as Strategy A's
+original equity test):
+
+| Instrument | Lookback | Holding | n | Hit rate | z-score |
+|---|---|---|---|---|---|
+| BTC/USD | 7d | 1d | 4,572 | 49.6% | -0.56 |
+| BTC/USD | 28d | 7d | 4,572 | 51.9% | **2.63** |
+| BTC/USD | 84d | 30d | 4,572 | 47.2% | **-3.76** |
+| ETH/USD | 7d | 1d | 4,572 | 47.6% | **-3.28** |
+| ETH/USD | 28d | 7d | 4,572 | 52.4% | **3.22** |
+| ETH/USD | 84d | 30d | 4,572 | 45.5% | **-6.03** |
+
+**Real, striking finding**: the EXACT 84d/30d configuration that was
+significantly POSITIVE for all 3 equities is significantly NEGATIVE for
+both crypto pairs (BTC z=-3.76, ETH z=-6.03) — strong, direct evidence
+that Strategy J's own premise is correct: crypto's 24/7 market genuinely
+behaves differently at this horizon, and assuming the equity result would
+transfer would have been actively wrong, not just unproven.
+
+**Applying this session's own hard-won lesson immediately**: rather than
+treating the 28d/7d config's apparent significance as a new finding,
+holdout-tested it the same way Strategy A's own equity result was
+corrected earlier today:
+
+| Instrument | Development z | Holdout z |
+|---|---|---|
+| BTC/USD | **3.77** | **-1.65** |
+| ETH/USD | 0.43 | **6.35** |
+
+**Neither instrument replicates consistently** — BTC's development
+significance flips to negative on holdout; ETH's development showed
+NOTHING significant but its holdout alone is strongly significant. Two
+instruments disagreeing this sharply between development and holdout is
+itself the finding: this specific 28d/7d configuration is not a stable,
+exploitable signal for crypto, just noise that happened to look
+significant in one slice or the other. Correctly reported as a null
+result, not a discovery.
+
+**Volatility breakout**, same config as the equity test
+(`compression_window_bars=20`, `holding_bars=5`, `regime_lookback=250`):
+BTC/USD n=43 hit_rate=46.5% z=-0.46; ETH/USD n=59 hit_rate=50.8% z=0.13 —
+no signal for either, consistent with (not contradicting) the equity
+result.
+
+**Conclusion for Strategy J**: real, separate crypto validation was
+necessary and justified — the equity-validated momentum config actively
+REVERSES sign on crypto, and no tested crypto-specific config survives a
+genuine holdout either. No positive finding to report for crypto momentum
+or volatility breakout at the configs tested.
+
+## 8. Known limitations, disclosed not hidden
+
+- 5 of 10 strategy families (B, D, E, G, I) are `RESEARCH_SPEC_ONLY` — specs
+  exist, nothing has been run against real data yet. This is deliberate,
+  incremental scoping, not an oversight.
 - Only 3 of the brief's 8 named equity candidates have any backfilled
   candle history at all (see Section 1 above) — a real gap for Priority 4.
 - 2 of the 11 sector ETFs (XLE, XLF) have zero backfilled H4 history despite
   real Alpaca data existing for both — a real, disclosed backfill gap found
   via Strategy H's own test (Section 6 above), not fixed in this pass.
-- Strategy A/F/C/H's own results above cover equities only — Strategy J
-  explicitly calls for a SEPARATE crypto validation, not done in this pass.
 - Strategy F's AAPL result (z=2.12, n=8) is too small a sample to trust —
   disclosed explicitly in Section 4 above, not quietly treated as a win.
 - Strategy C's fixed-horizon test is an acknowledged proxy, not a real test

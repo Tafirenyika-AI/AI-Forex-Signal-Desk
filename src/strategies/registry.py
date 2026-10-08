@@ -433,6 +433,8 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
                             "a failure of the research process.",
         validation_criteria="Strategy A/F's own validation criteria, independently re-run on BTC/USD and ETH/USD "
                              "candle history specifically — not inferred from the equity-universe result.",
+        status="HYPOTHESIS_TESTED",
+        implementation_ref="src/strategies/time_series_momentum.py, src/strategies/volatility_breakout.py (reused directly, crypto args)",
     ),
 }
 
