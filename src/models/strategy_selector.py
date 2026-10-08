@@ -17,11 +17,25 @@ hypothesis test came back null (Strategy C) or was actively CONTRADICTED
 (Strategy H) is excluded from selection, not merely down-weighted, until
 real new evidence changes that.
 
-"NO_TRADE must be a normal and acceptable decision" — the default and most
-common outcome by construction: with only one currently-eligible strategy
-(A), any instrument/time where A's own live signal doesn't fire (no clear
-direction, insufficient history, or the instrument isn't one A was
-validated against) returns NO_TRADE, not a forced guess.
+**ELIGIBLE_STRATEGIES = () as of 2026-10-08 (Priority 6 finding) — Strategy
+A's own eligibility was PULLED, not just disclosed.** This module originally
+shipped with `ELIGIBLE_STRATEGIES = ("A",)` based solely on Strategy A's
+sign-prediction hit-rate (docs/V4_STRATEGY_RESEARCH.md Section 3). A
+follow-up real portfolio backtest (Priority 6, same day) of 129 real
+signals generated from that exact sign-prediction, using standard ATR
+stop/target sizing, came back UNPROFITABLE (net return -4.08%, profit
+factor 0.88, Sharpe -0.39) — correctly predicting a return's sign more
+often than chance does not by itself produce a profitable trading rule.
+Selecting on the hit-rate evidence alone, now that a real backtest
+contradicts it, would be exactly the "arbitrary confidence" the brief
+warns against. Re-adding "A" (or anything else) requires a real,
+profitable `BACKTESTED`-stage result, not a reversion to the earlier,
+now-superseded hit-rate-only bar.
+
+"NO_TRADE must be a normal and acceptable decision" — with zero
+currently-eligible strategies, NO_TRADE is presently the ONLY possible
+outcome of this selector, which is itself the correct, honest reflection
+of the real evidence on hand today, not a bug.
 
 "The meta-model must not override the independent risk governor" — this
 module makes no broker call, touches no risk_decisions/trade_intents
@@ -40,17 +54,19 @@ from src.strategies.time_series_momentum import current_momentum_signal
 
 MODEL_VERSION = "v4-priority5-selector-2026-10-08"
 
-# Only strategies with real, recorded, statistically significant evidence
-# (docs/V4_STRATEGY_RESEARCH.md) are eligible to be SELECTED -- not every
-# HYPOTHESIS_TESTED strategy. Strategy A cleared z>2.5 across all 3
-# instruments tested at its validated 84-day config; Strategy C showed no
-# significant signal (an acknowledged proxy-test limitation, not grounds
-# for selection either way); Strategy F's one significant result (AAPL,
-# z=2.12) was explicitly flagged as too small a sample (n=8) to trust;
-# Strategy H's result actively CONTRADICTED its own hypothesis. None of
-# C/F/H belongs here yet -- adding one back requires new real evidence,
-# not just reaching HYPOTHESIS_TESTED status.
-ELIGIBLE_STRATEGIES: tuple[str, ...] = ("A",)
+# Only strategies with real, recorded, statistically significant AND
+# PROFITABLE-IN-BACKTEST evidence (docs/V4_STRATEGY_RESEARCH.md) are
+# eligible to be SELECTED -- not every HYPOTHESIS_TESTED strategy, and not
+# a hit-rate finding alone. Strategy A cleared z>2.5 across all 3
+# instruments tested at its validated 84-day config, BUT a real portfolio
+# backtest of that exact signal came back unprofitable (see this module's
+# own docstring) -- pulled, not merely never added. Strategy C showed no
+# significant signal; Strategy F's one significant result (AAPL, z=2.12)
+# was flagged too small a sample (n=8) to trust; Strategy H's result
+# actively CONTRADICTED its own hypothesis. Every entry here requires both
+# a significant hypothesis-test result AND a profitable backtest result --
+# neither alone is sufficient.
+ELIGIBLE_STRATEGIES: tuple[str, ...] = ()
 
 # The exact configuration docs/V4_STRATEGY_RESEARCH.md's Section 3 found
 # real evidence for (NVDA/AAPL/MSFT, z=2.55/3.34/6.32) -- selection must
@@ -81,6 +97,21 @@ def select_strategy(
         "ready order. V4_SHADOW_ONLY (src/v4/feature_flags.py) must stay true until a real promotion "
         "decision is made (brief Section 17, champion/challenger)."
     )
+
+    if "A" not in ELIGIBLE_STRATEGIES:
+        return StrategySelection(
+            candidate_symbol=instrument, action="NO_TRADE", strategy_selected=None, timeframe="swing",
+            estimated_net_advantage=None, confidence=None,
+            supporting_evidence=(
+                "Strategy A's selector eligibility was pulled 2026-10-08: its sign-prediction hit-rate is "
+                "real, but a real portfolio backtest of that exact signal came back unprofitable (net return "
+                "-4.08%, profit factor 0.88, Sharpe -0.39 — docs/V4_STRATEGY_RESEARCH.md Section 3's own "
+                "follow-up finding). No strategy currently meets both the hypothesis-test AND profitable-"
+                "backtest bar this selector requires — NO_TRADE is the correct, honest reflection of that, "
+                "not a gap in coverage."
+            ),
+            risk_assessment=risk_assessment, model_version=MODEL_VERSION,
+        )
 
     if instrument not in _STRATEGY_A_VALIDATED_INSTRUMENTS:
         return StrategySelection(

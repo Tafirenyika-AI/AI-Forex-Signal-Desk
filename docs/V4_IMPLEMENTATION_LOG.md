@@ -320,3 +320,27 @@ Both fixed with dedicated regression tests reproducing the exact real bug patter
 - `profit_factor` returns `inf` (not a crash, and not `None`) when every closed trade won — a real, correctly-handled edge case, tested explicitly.
 
 **Next**: per "go on" — the remaining Priority 6 items, Priority 7 (dashboard restructure), or reconsidering Strategy A's selector eligibility given this session's own new backtest finding. Worth checking with the user given the real-finding above has a direct bearing on Priority 5's existing selector.
+
+---
+
+## Priority 5 (correction) — Strategy A's selector eligibility pulled
+
+2026-10-08. Asked the user directly how to handle Priority 6's finding bearing on Priority 5's selector; chose to pull Strategy A's eligibility now rather than leave it disclosed-only or investigate further first.
+
+**`src/models/strategy_selector.py`**: `ELIGIBLE_STRATEGIES` changed from `("A",)` to `()`. Also fixed a real gap in the original implementation while making this change: `ELIGIBLE_STRATEGIES` had been defined but never actually referenced in `select_strategy()`'s own control flow (which hardcoded a check against `_STRATEGY_A_VALIDATED_INSTRUMENTS` instead) — a dead constant, found while wiring in the real eligibility check this correction needed anyway. Now genuinely gates: `select_strategy()` checks `"A" not in ELIGIBLE_STRATEGIES` first, before any instrument-specific logic, and returns `NO_TRADE` with an explicit explanation naming the real backtest finding that triggered the pull (net return -4.08%, profit factor 0.88, Sharpe -0.39).
+
+**Mechanism proven still correct, not broken**: rewrote `tests/test_strategy_selector.py` to (a) confirm the new real behavior — `NO_TRADE` for every instrument, even NVDA with a crystal-clear synthetic uptrend — and (b) via `monkeypatch.setattr(strategy_selector, "ELIGIBLE_STRATEGIES", ("A",))` in one dedicated test, confirm the underlying BUY/SELL selection logic still produces a correct, fully-reasoned selection when eligibility is restored — proving this is a deliberate gate, not a regression.
+
+**Live-verified against real production data**: `select_strategy()` for NVDA/AAPL/MSFT now all correctly return `NO_TRADE` (previously all three returned `BUY`).
+
+**Files changed**: `src/models/strategy_selector.py`, `tests/test_strategy_selector.py` (rewritten: 5 tests, net +1 from before).
+
+**Tests**: Full suite: **460/460 passing** (459 prior, 1 test removed + 2 added), zero regressions.
+
+**Execution-impact assessment**: zero — this module was already shadow-only/no-broker-call; this change only makes its already-conservative output more conservative.
+
+**Known limitations, disclosed not hidden**:
+- `ELIGIBLE_STRATEGIES = ()` means this selector currently has no path to ever return anything but `NO_TRADE` — correct given the real evidence today, but worth remembering this isn't a permanent design constraint, just today's honest state.
+- Re-adding any strategy requires BOTH a significant hypothesis-test result AND a profitable backtest result (the new bar this correction established) — documented in the module's own top-of-file docstring and the `ELIGIBLE_STRATEGIES` comment so a future session doesn't accidentally revert to the weaker, hit-rate-only bar.
+
+**Next**: per "go on" — the remaining Priority 6 items, Priority 7 (dashboard restructure), or trying a different Strategy A implementation (different entry cadence/sizing) to see if a profitable backtest variant exists before concluding the sign-prediction can't be monetized at all.
