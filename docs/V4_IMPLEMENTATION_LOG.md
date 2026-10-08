@@ -61,3 +61,32 @@ Both fixed with dedicated regression tests reproducing the exact real bug patter
 - The real account's two open positions (AAPL, MSFT) remain unclassified (V4 not yet activated) — they stay protected exactly as before, by the existing, already-live pipeline and governor, unaffected either way by this phase.
 
 **Next**: Priority 2 (small, concrete, low-risk gaps — `BENCHMARK_INSTRUMENTS` additions, `src/models/regime.py` extensions, MFE/MAE tracking, a `rejected_signal_outcomes` table) or Priority 3 (the Strategy Research Laboratory) — continuing per "go on."
+
+---
+
+## Priority 2 (part 1) — Benchmark instruments + regime detail columns — **DONE**
+
+2026-10-08, continuing per "go on." Covers the first two of Priority 2's four items from `docs/V4_ARCHITECTURE.md` (Section 4 and Section 8 gaps); MFE/MAE tracking and `rejected_signal_outcomes` are the remaining two, picked up next.
+
+**`src/scripts/backfill_candles.py`**: `BENCHMARK_INSTRUMENTS` now also includes `IWM` (small-cap benchmark — a genuinely different regime driver than SPY's large-cap-heavy composition), `GLD`/`IAU` (gold, the standard risk-off/inflation-hedge cross-market reference), and `USO` (oil, a standalone macro driver beyond XLE's energy-sector proxy). Data-only, additive — these four will simply start accumulating history on the next scheduled backfill run, same as every existing benchmark ETF. **Live-verified**: queried Alpaca directly for all four symbols — `IWM` returned 27 real H1 bars (e.g. close 277.67 at 2026-10-07 20:00 UTC), `GLD` 23 bars (close 375.85), `IAU` 21 bars (close 77.07), `USO` 24 bars (close 143.925) — confirms all four are valid, actively-traded Alpaca symbols before relying on them.
+
+**`src/models/regime.py`**: added `regime_direction` (`TREND_UP`/`TREND_DOWN`, split by the sign of `trend_slope`, only set when `regime == TREND`), `regime_low_volatility` (boolean, the low-percentile mirror of the existing `HIGH_VOLATILITY` check — `vol_percentile <= 0.15`, only within `RANGE`), `regime_probability` (a cheap uncertainty proxy computed from how far the deciding percentile sits past its threshold — 1.0 for `SHOCK` by construction, a real margin for `HIGH_VOLATILITY`/`TREND`/`RANGE`, 0.0 during warm-up), and `regime_event_driven` (an optional caller-supplied boolean flag, defaulting to `False` for every existing call site).
+
+**Deliberately did NOT widen the `regime` column's own value set** (e.g. replacing `TREND` with `TREND_UP`/`TREND_DOWN` directly) — confirmed by reading `src/decision/fusion.py` that `REGIME_WEIGHT_MULTIPLIERS`/`REGIME_THRESHOLD_MULTIPLIERS` are live, execution-adjacent dictionaries keyed on today's exact 5 labels (`TREND`/`RANGE`/`SHOCK`/`HIGH_VOLATILITY`/`UNKNOWN`); an unrecognized key silently falls through to a neutral no-adjustment default (`.get(regime, {})`), so changing what `regime` itself can be would have silently changed real fuse() weighting for every live trade. All four new fields are additive columns only, read by nothing yet.
+
+**`EVENT_DRIVEN` scope cut, disclosed**: `classify_regime()` now accepts an optional `event_flag: pd.Series | None` parameter and a real `REGIME_EVENT_DRIVEN` constant exists, but it is NOT wired into the live equity feature pipeline (`src/features/equity_engine.py` / `equity_vectorized.py`) in this pass — doing so needs a real per-symbol company_events batch-fetch path that doesn't exist yet in the vectorized universe pipeline, and building that hastily within this same slice risked exactly the kind of scope creep "small, concrete gaps" is supposed to avoid. The mechanism is built and tested; wiring a real feed into it is follow-up work, not silently skipped.
+
+**Real bug found and fixed while building this (not live-impacting)**: the first implementation used a literal `None` for non-trending rows in `regime_direction`. Pandas 3.0 (confirmed installed: `pandas==3.0.5`) defaults `future.infer_string=True`, which silently converts `None` into `NaN` the moment a mostly-string object column is constructed or assigned — found via a failing test (`nan == None` is `False`), not by inspection. Fixed by documenting the real contract (`pd.isna()`, not `is None`) rather than fighting the framework default.
+
+**Files changed**: `src/scripts/backfill_candles.py`, `src/models/regime.py`, `tests/test_v4_benchmark_instruments.py` (new, 2 tests), `tests/test_regime_v4_detail_columns.py` (new, 9 tests).
+
+**Tests**: 11 new, all passing. Full suite: **409/409 passing** (398 prior + 11 new), zero regressions.
+
+**Execution-impact assessment**: zero. `BENCHMARK_INSTRUMENTS` only affects what the backfill script fetches (no broker writes, ever). The new regime columns are read by no code path yet — `fuse()`, `src/risk/governor.py`, `src/backtest/engine.py`, and every other `classify_regime()` caller continue to read only the three pre-existing columns, byte-for-byte unchanged.
+
+**Known limitations, disclosed not hidden**:
+- `regime_event_driven` has no real data feeding it yet anywhere live (see EVENT_DRIVEN scope cut above).
+- No caller yet consumes `regime_direction`/`regime_low_volatility`/`regime_probability` — they exist for future V4 strategy-family work (Priority 3+) to read, not wired into any decision today.
+- `regime_probability`'s formula is a disclosed heuristic (percentile-margin distance), not a calibrated/fitted probability — matches the architecture doc's own framing ("the percentile values already computed are a natural, cheap source for this"), not a claim of statistical rigor.
+
+**Next**: Priority 2 (part 2) — MFE/MAE columns on `trade_outcomes` + a `rejected_signal_outcomes` table — then Priority 3 (Strategy Research Laboratory), per "go on."

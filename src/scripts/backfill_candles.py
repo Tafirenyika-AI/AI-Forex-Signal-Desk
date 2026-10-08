@@ -53,7 +53,15 @@ from src.equity.relationships import SIC_TO_SECTOR
 # whatever equities users DO trade, not trading choices themselves.
 # Derived from SIC_TO_SECTOR (not a separate hardcoded list) so a new
 # sector ETF added there is automatically backfilled too.
-BENCHMARK_INSTRUMENTS = {"SPY"} | {etf for _, (_, etf) in SIC_TO_SECTOR}
+#
+# V4 Priority 2 (docs/V4_ARCHITECTURE.md Section 4 gap): IWM (small-cap
+# benchmark, distinct regime from SPY's large-cap-heavy composition),
+# GLD/IAU (gold - the standard risk-off/inflation-hedge cross-market
+# reference), USO (oil - a real macro driver for energy-sector names
+# already covered via XLE but not as a standalone cross-market signal).
+# Same reference-infrastructure rationale as SPY/the sector ETFs above:
+# backfilled regardless of whether any user trades them.
+BENCHMARK_INSTRUMENTS = {"SPY", "IWM", "GLD", "IAU", "USO"} | {etf for _, (_, etf) in SIC_TO_SECTOR}
 
 # Deep for H1/H4 (the granularities the price model and backtest engine
 # actually target), more modest for M15 — it explodes fastest in row count
