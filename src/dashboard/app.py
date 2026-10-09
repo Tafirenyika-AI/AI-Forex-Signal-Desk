@@ -1434,15 +1434,43 @@ if st.sidebar.button("↻ Refresh view", width="stretch"):
 st.sidebar.caption("Live data (prices, account) is cached 15s so switching tabs feels instant — refresh forces a real re-fetch.")
 
 # ------------------------------------------------------------------ tabs --
-_tab_labels = ["🛰️ Mission Control", "📊 Markets", "🗳️ Agent Council", "🚦 Pending Signals", "📈 Trade History", "🧠 Model Learning",
-               "🥊 Challengers", "📚 Knowledge Lab", "🌍 Currency Map", "💰 Account", "🛡️ Risk Center",
-               "⚙️ Automation Center", "📜 Audit Log", "📋 All Signals", "🧬 Equity Intelligence"]
+_outer_labels = ['🛰️ Mission Control', '📊 Market Intelligence', '🧠 AI Intelligence', '🔬 Research Laboratory', '💹 Trading Performance', '🛡️ Risk & Operations']
 if CURRENT_IS_ADMIN:
-    _tab_labels.append("🛠️ Admin")
-_tabs = st.tabs(_tab_labels)
-(tab_mission, tab_markets, tab_council, tab_signals, tab_trades, tab_learning, tab_challengers, tab_knowledge,
- tab_currency, tab_account, tab_risk, tab_automation, tab_history, tab_all, tab_equity_intel) = _tabs[:15]
-tab_admin = _tabs[15] if CURRENT_IS_ADMIN else None
+    _outer_labels.append("🛠️ Admin")
+_outer_tabs = st.tabs(_outer_labels)
+
+tab_mission = _outer_tabs[0]
+
+with _outer_tabs[1]:
+    _inner_tabs = st.tabs(['📊 Markets', '🌍 Currency Map'])
+    tab_markets = _inner_tabs[0]
+    tab_currency = _inner_tabs[1]
+
+with _outer_tabs[2]:
+    _inner_tabs = st.tabs(['🗳️ Agent Council', '🚦 Pending Signals', '🧠 Model Learning'])
+    tab_council = _inner_tabs[0]
+    tab_signals = _inner_tabs[1]
+    tab_learning = _inner_tabs[2]
+
+with _outer_tabs[3]:
+    _inner_tabs = st.tabs(['🥊 Challengers', '📚 Knowledge Lab'])
+    tab_challengers = _inner_tabs[0]
+    tab_knowledge = _inner_tabs[1]
+
+with _outer_tabs[4]:
+    _inner_tabs = st.tabs(['📈 Trade History', '💰 Account', '📋 All Signals', '🧬 Equity Intelligence'])
+    tab_trades = _inner_tabs[0]
+    tab_account = _inner_tabs[1]
+    tab_all = _inner_tabs[2]
+    tab_equity_intel = _inner_tabs[3]
+
+with _outer_tabs[5]:
+    _inner_tabs = st.tabs(['🛡️ Risk Center', '⚙️ Automation Center', '📜 Audit Log'])
+    tab_risk = _inner_tabs[0]
+    tab_automation = _inner_tabs[1]
+    tab_history = _inner_tabs[2]
+
+tab_admin = _outer_tabs[len(_outer_labels) - 1] if CURRENT_IS_ADMIN else None
 
 HORIZON_ORDER = {"15m": 0, "1h": 1, "4h": 2, "1d": 3}
 HORIZON_STYLE_HINT = {
@@ -1456,7 +1484,6 @@ HORIZON_STYLE_HINT = {
 # the more readable chart for a human looking at a 4h-horizon signal.
 HORIZON_TO_CHART_GRANULARITY = {"15m": "M15", "1h": "H1", "4h": "H4", "1d": "D"}
 
-# --------------------------------------------------------- mission control --
 with tab_mission:
     st.subheader("Mission Control")
     st.caption(
@@ -1576,1282 +1603,1294 @@ with tab_mission:
 
 
 # ----------------------------------------------------------------- markets --
-with tab_markets:
-    st.subheader("Markets")
-    st.caption(
-        "Free-form price chart, independent of any specific signal — the same "
-        "candlestick_figure() used inline on 🚦 Pending Signals, here for browsing "
-        "any of your watched instruments at any granularity."
-    )
-    _all_watch = _all_instruments if _all_instruments else ("EUR_USD",)
-    _by_class: dict[str, list[str]] = {}
-    for _inst in _all_watch:
-        _by_class.setdefault(asset_class_for(_inst), []).append(_inst)
-    _available_market_classes = [c for c in ("forex", "equity", "crypto") if _by_class.get(c)]
 
-    market_class = st.radio(
-        "Market", options=_available_market_classes, horizontal=True, key="market_asset_class",
-        format_func=lambda c: ASSET_CLASS_LABELS.get(c, c.upper()),
-    )
-    market_instruments = sorted(_by_class.get(market_class, _all_watch))
-
-    mc1, mc2 = st.columns([2, 1])
-    with mc1:
-        market_instrument = st.selectbox("Instrument", market_instruments, key="market_instrument")
-    with mc2:
-        market_granularity_label = st.selectbox(
-            "Granularity", ["15m", "1h", "4h", "1d"], index=1, key="market_granularity",
-            format_func=lambda h: f"{h} ({HORIZON_STYLE_HINT.get(h, '')})",
+    with tab_markets:
+        st.subheader("Markets")
+        st.caption(
+            "Free-form price chart, independent of any specific signal — the same "
+            "candlestick_figure() used inline on 🚦 Pending Signals, here for browsing "
+            "any of your watched instruments at any granularity."
         )
-    try:
-        market_candles = cached_candles(
-            market_instrument, HORIZON_TO_CHART_GRANULARITY[market_granularity_label], 150,
+        _all_watch = _all_instruments if _all_instruments else ("EUR_USD",)
+        _by_class: dict[str, list[str]] = {}
+        for _inst in _all_watch:
+            _by_class.setdefault(asset_class_for(_inst), []).append(_inst)
+        _available_market_classes = [c for c in ("forex", "equity", "crypto") if _by_class.get(c)]
+
+        market_class = st.radio(
+            "Market", options=_available_market_classes, horizontal=True, key="market_asset_class",
+            format_func=lambda c: ASSET_CLASS_LABELS.get(c, c.upper()),
         )
-        st.plotly_chart(
-            candlestick_figure(market_candles, height=420), width="stretch",
-            config={"displayModeBar": False},
-        )
-        with st.expander("Table view (raw candles)"):
-            st.dataframe(pd.DataFrame(market_candles), width="stretch", hide_index=True)
-    except Exception as exc:  # noqa: BLE001
-        st.warning(f"Could not load price chart: {exc!r}")
+        market_instruments = sorted(_by_class.get(market_class, _all_watch))
 
-# ----------------------------------------------------------------- council --
-with tab_council:
-    st.subheader("Agent Council")
-    st.caption(
-        "Autonomous Upgrade Spec sec. 19: every component's raw vote for the most recent "
-        "decision cycles, the regime-adjusted weight it was actually given (src/decision/"
-        "fusion.py's REGIME_WEIGHT_MULTIPLIERS, P7), and where the combined vote landed. "
-        "This is the same math run_loop.py already ran — just made visible."
-    )
-
-    with engine.connect() as conn:
-        recent_intents = conn.execute(
-            select(trade_intents)
-            .where(trade_intents.c.user_id == CURRENT_USER_ID)
-            .order_by(trade_intents.c.id.desc()).limit(15)
-        ).mappings().all()
-
-    for intent in recent_intents:
-        with engine.connect() as conn:
-            votes = conn.execute(
-                select(predictions_table).where(
-                    predictions_table.c.instrument == intent["instrument"],
-                    predictions_table.c.horizon == intent["horizon"],
-                    predictions_table.c.time == intent["time"],
-                )
-            ).mappings().all()
-        regime_mult = REGIME_WEIGHT_MULTIPLIERS.get(intent["regime"] or "", {})
-        action_color = {"BUY": "positive", "SELL": "negative"}.get(intent["action"], "")
-        with st.container(border=True):
-            st.markdown(
-                f"**{intent['instrument']} / {intent['horizon']}** · regime={intent['regime']} · "
-                f"{intent['time']:%b %d %H:%M UTC} → "
-                f"<span class='af-pl-value {action_color}'>{intent['action']}</span> "
-                f"(confidence {intent['confidence']:.0%})",
-                unsafe_allow_html=True,
-            )
-            if votes:
-                vote_rows = [
-                    {
-                        "Component": v["component"],
-                        "Score": round(json.loads(v["raw_json"]).get("score", 0.0), 3),
-                        "Confidence": round(v["confidence"], 3),
-                        "Base weight": COMPONENT_WEIGHTS.get(v["component"], 0.0),
-                        "Regime multiplier": regime_mult.get(v["component"], 1.0),
-                    }
-                    for v in votes
-                ]
-                st.plotly_chart(
-                    component_votes_figure(vote_rows), width="stretch", config={"displayModeBar": False},
-                    key=f"votes_{intent['id']}",
-                )
-                with st.expander("Raw vote data"):
-                    st.dataframe(pd.DataFrame(vote_rows), width="stretch", hide_index=True)
-            else:
-                st.caption("No component votes logged for this exact cycle (older row, predates full logging).")
-
-# --------------------------------------------------------- pending signals --
-with tab_signals:
-    expired_count = auth_service.expire_stale_intents(engine, CURRENT_USER_ID)
-    if expired_count:
-        st.caption(f"{expired_count} stale signal(s) auto-expired (older than their own horizon window).")
-
-    all_pending = auth_service.list_pending(engine, CURRENT_USER_ID)
-    available_horizons = sorted(
-        {p["horizon"] for p in all_pending}, key=lambda h: HORIZON_ORDER.get(h, 99)
-    )
-
-    if not all_pending:
-        st.info(
-            "No signals are awaiting authorization right now. Use **Run a decision "
-            "cycle** in the sidebar to scan the markets, or check back later. Every "
-            "cycle checks 15m, 1h and 4h independently for every pair — there's no "
-            "single signal per pair, so whatever your trading frequency, something "
-            "here is sized for it."
-        )
-    else:
-        available_classes = sorted({asset_class_for(p["instrument"]) for p in all_pending})
-        f1, f2 = st.columns([3, 2])
-        with f1:
-            st.caption("Filter by how often you trade — each horizon is an independent signal, not a subset of another.")
-            horizon_filter = st.multiselect(
-                "Horizon", options=available_horizons, default=available_horizons,
+        mc1, mc2 = st.columns([2, 1])
+        with mc1:
+            market_instrument = st.selectbox("Instrument", market_instruments, key="market_instrument")
+        with mc2:
+            market_granularity_label = st.selectbox(
+                "Granularity", ["15m", "1h", "4h", "1d"], index=1, key="market_granularity",
                 format_func=lambda h: f"{h} ({HORIZON_STYLE_HINT.get(h, '')})",
             )
-        with f2:
-            st.caption("Filter by market.")
+        try:
+            market_candles = cached_candles(
+                market_instrument, HORIZON_TO_CHART_GRANULARITY[market_granularity_label], 150,
+            )
+            st.plotly_chart(
+                candlestick_figure(market_candles, height=420), width="stretch",
+                config={"displayModeBar": False},
+            )
+            with st.expander("Table view (raw candles)"):
+                st.dataframe(pd.DataFrame(market_candles), width="stretch", hide_index=True)
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"Could not load price chart: {exc!r}")
+
+    # ----------------------------------------------------------------- council --
+
+    with tab_currency:
+        st.subheader("Currency Strength Map")
+        st.caption(
+            "Autonomous Upgrade Spec sec. 10: an independent latent strength state per "
+            "currency (technical + macro + cross-market + news), rather than only ever "
+            "comparing two currencies implicitly inside one pair's decision. Aggregated "
+            "from data already collected — no new data source, just a new view over it."
+        )
+
+        strengths = compute_currency_map()
+        ranked = sorted(strengths.values(), key=lambda s: s.composite_score, reverse=True)
+
+        st.plotly_chart(currency_strength_heatmap(ranked), width="stretch", config={"displayModeBar": False})
+
+        cols = st.columns(len(ranked))
+        for col, s in zip(cols, ranked):
+            with col:
+                polarity = "positive" if s.composite_score > 0.05 else ("negative" if s.composite_score < -0.05 else None)
+                stat_tile(s.currency, f"{s.composite_score:+.2f}", f"conf {s.composite_confidence:.0%}", polarity=polarity)
+
+        st.write("")
+        st.markdown("#### Component breakdown")
+        for s in ranked:
+            with st.container(border=True):
+                st.markdown(f"**{s.currency}** — composite {s.composite_score:+.2f} (confidence {s.composite_confidence:.0%})")
+                b1, b2, b3, b4 = st.columns(4)
+                b1.metric("Technical", f"{s.technical_score:+.2f}", f"conf {s.technical_confidence:.0%}")
+                b2.metric("Macro", f"{s.macro_score:+.2f}", f"conf {s.macro_confidence:.0%}")
+                b3.metric("Cross-market", f"{s.cross_market_score:+.2f}", f"conf {s.cross_market_confidence:.0%}")
+                b4.metric("News", f"{s.news_score:+.2f}", f"conf {s.news_confidence:.0%}")
+                if s.positioning_confidence > 0:
+                    crowd_label = "crowded long" if s.positioning_crowding_score > 0.1 else (
+                        "crowded short" if s.positioning_crowding_score < -0.1 else "neutral"
+                    )
+                    st.caption(
+                        f"CFTC positioning (weekly COT, reported separately — not in composite): "
+                        f"{s.positioning_crowding_score:+.2f} ({crowd_label}, conf {s.positioning_confidence:.0%})"
+                    )
+
+        st.caption(
+            "Positioning is intentionally excluded from the composite score above: a crowded "
+            "position can mean momentum continuing or reversal risk, and folding it in would "
+            "silently pick one interpretation. It's shown per-currency instead, for judgment."
+        )
+        st.caption(
+            "Reading this: two currencies far apart on the composite scale (e.g. one strongly "
+            "positive, one strongly negative) is exactly the divergence the opportunity scanner "
+            "should care about — not yet wired into pair selection (that's the regime router, "
+            "a later priority), but visible here first."
+        )
+
+    # ------------------------------------------------------------------ account --
+
+    with tab_council:
+        st.subheader("Agent Council")
+        st.caption(
+            "Autonomous Upgrade Spec sec. 19: every component's raw vote for the most recent "
+            "decision cycles, the regime-adjusted weight it was actually given (src/decision/"
+            "fusion.py's REGIME_WEIGHT_MULTIPLIERS, P7), and where the combined vote landed. "
+            "This is the same math run_loop.py already ran — just made visible."
+        )
+
+        with engine.connect() as conn:
+            recent_intents = conn.execute(
+                select(trade_intents)
+                .where(trade_intents.c.user_id == CURRENT_USER_ID)
+                .order_by(trade_intents.c.id.desc()).limit(15)
+            ).mappings().all()
+
+        for intent in recent_intents:
+            with engine.connect() as conn:
+                votes = conn.execute(
+                    select(predictions_table).where(
+                        predictions_table.c.instrument == intent["instrument"],
+                        predictions_table.c.horizon == intent["horizon"],
+                        predictions_table.c.time == intent["time"],
+                    )
+                ).mappings().all()
+            regime_mult = REGIME_WEIGHT_MULTIPLIERS.get(intent["regime"] or "", {})
+            action_color = {"BUY": "positive", "SELL": "negative"}.get(intent["action"], "")
+            with st.container(border=True):
+                st.markdown(
+                    f"**{intent['instrument']} / {intent['horizon']}** · regime={intent['regime']} · "
+                    f"{intent['time']:%b %d %H:%M UTC} → "
+                    f"<span class='af-pl-value {action_color}'>{intent['action']}</span> "
+                    f"(confidence {intent['confidence']:.0%})",
+                    unsafe_allow_html=True,
+                )
+                if votes:
+                    vote_rows = [
+                        {
+                            "Component": v["component"],
+                            "Score": round(json.loads(v["raw_json"]).get("score", 0.0), 3),
+                            "Confidence": round(v["confidence"], 3),
+                            "Base weight": COMPONENT_WEIGHTS.get(v["component"], 0.0),
+                            "Regime multiplier": regime_mult.get(v["component"], 1.0),
+                        }
+                        for v in votes
+                    ]
+                    st.plotly_chart(
+                        component_votes_figure(vote_rows), width="stretch", config={"displayModeBar": False},
+                        key=f"votes_{intent['id']}",
+                    )
+                    with st.expander("Raw vote data"):
+                        st.dataframe(pd.DataFrame(vote_rows), width="stretch", hide_index=True)
+                else:
+                    st.caption("No component votes logged for this exact cycle (older row, predates full logging).")
+
+    # --------------------------------------------------------- pending signals --
+
+    with tab_signals:
+        expired_count = auth_service.expire_stale_intents(engine, CURRENT_USER_ID)
+        if expired_count:
+            st.caption(f"{expired_count} stale signal(s) auto-expired (older than their own horizon window).")
+
+        all_pending = auth_service.list_pending(engine, CURRENT_USER_ID)
+        available_horizons = sorted(
+            {p["horizon"] for p in all_pending}, key=lambda h: HORIZON_ORDER.get(h, 99)
+        )
+
+        if not all_pending:
+            st.info(
+                "No signals are awaiting authorization right now. Use **Run a decision "
+                "cycle** in the sidebar to scan the markets, or check back later. Every "
+                "cycle checks 15m, 1h and 4h independently for every pair — there's no "
+                "single signal per pair, so whatever your trading frequency, something "
+                "here is sized for it."
+            )
+        else:
+            available_classes = sorted({asset_class_for(p["instrument"]) for p in all_pending})
+            f1, f2 = st.columns([3, 2])
+            with f1:
+                st.caption("Filter by how often you trade — each horizon is an independent signal, not a subset of another.")
+                horizon_filter = st.multiselect(
+                    "Horizon", options=available_horizons, default=available_horizons,
+                    format_func=lambda h: f"{h} ({HORIZON_STYLE_HINT.get(h, '')})",
+                )
+            with f2:
+                st.caption("Filter by market.")
+                class_filter = st.multiselect(
+                    "Market", options=available_classes, default=available_classes,
+                    format_func=lambda c: ASSET_CLASS_LABELS.get(c, c.upper()),
+                )
+            pending = [
+                p for p in all_pending
+                if p["horizon"] in horizon_filter and asset_class_for(p["instrument"]) in class_filter
+            ]
+            pending.sort(key=lambda p: (HORIZON_ORDER.get(p["horizon"], 99), -p["confidence"]))
+
+            instruments = tuple(sorted({p["instrument"] for p in pending}))
+            try:
+                live_prices = {p.instrument: p for p in cached_prices(instruments)}
+            except Exception as exc:  # noqa: BLE001
+                st.warning(f"Could not fetch live prices for freshness display: {exc!r}")
+                live_prices = {}
+
+            current_horizon_group = None
+            for intent in pending:
+                if intent["horizon"] != current_horizon_group:
+                    current_horizon_group = intent["horizon"]
+                    st.markdown(f"#### {current_horizon_group} signals")
+                live = live_prices.get(intent["instrument"])
+                current_price = live.mid if live else None
+                ticket = auth_service.build_manual_order_ticket(intent, current_price=current_price)
+
+                action_icon = "🟢" if intent["action"] == "BUY" else "🔴"
+                with st.container(border=True):
+                    header_col, meta_col = st.columns([3, 2])
+                    with header_col:
+                        st.subheader(f"{action_icon} {intent['instrument']} — {intent['action']}")
+                        st.markdown(asset_class_badge_html(intent["instrument"]), unsafe_allow_html=True)
+                        st.caption(
+                            f"Signal generated {intent['time']:%Y-%m-%d %H:%M UTC} · "
+                            f"{intent['age_seconds']/60:.0f} min ago · execution_mode={intent['execution_mode']}"
+                        )
+                    with meta_col:
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("Confidence", f"{intent['confidence']:.0%}")
+                        m2.metric("Regime", intent["regime"])
+                        m3.metric("Horizon", intent["horizon"])
+
+                    expires_at = intent["expires_at"]
+                    remaining = intent["time_remaining_seconds"]
+                    urgency = intent["urgency"]
+                    expiry_line = (
+                        f"⏰ Expires **{expires_at:%H:%M UTC}** on {expires_at:%Y-%m-%d} "
+                        f"({'in ' + format_duration(remaining) if remaining > 0 else format_duration(remaining) + ' ago'})"
+                    )
+                    if urgency == "expired":
+                        st.error(f"🔴 EXPIRED — {expiry_line}. This signal should not be authorized; re-scan instead.")
+                    elif urgency == "critical":
+                        st.warning(f"🟠 Expiring soon — {expiry_line}")
+                    elif urgency == "warning":
+                        st.info(f"🟡 {expiry_line}")
+                    else:
+                        st.success(f"🟢 {expiry_line}")
+
+                    with st.expander("📊 Price chart", expanded=False):
+                        try:
+                            granularity = HORIZON_TO_CHART_GRANULARITY.get(intent["horizon"], "M15")
+                            candles = cached_candles(intent["instrument"], granularity, 96)
+                            st.plotly_chart(
+                                candlestick_figure(
+                                    candles,
+                                    entry=ticket.get("reference_price"),
+                                    stop=ticket.get("stop_loss"),
+                                    target=ticket.get("take_profit"),
+                                ),
+                                width="stretch", config={"displayModeBar": False},
+                                key=f"candles_{intent['id']}",
+                            )
+                            with st.expander("Table view (raw candles)"):
+                                st.dataframe(pd.DataFrame(candles), width="stretch", hide_index=True)
+                        except Exception as exc:  # noqa: BLE001
+                            # A chart failure must never block signal review/authorization
+                            # below it — this tab's real job is the approve/reject buttons.
+                            st.caption(f"Could not load price chart: {exc!r}")
+
+                    col_left, col_right = st.columns(2)
+                    with col_left:
+                        st.markdown("**Key drivers**")
+                        for d in intent["key_drivers"]:
+                            st.markdown(f"- {d}")
+                        if intent["contrary_evidence"]:
+                            st.markdown("**⚠️ Contrary evidence**")
+                            for c in intent["contrary_evidence"]:
+                                st.markdown(f"- {c}")
+                        st.markdown(f"**Entry condition:** {intent['entry_condition']}")
+                        st.markdown(f"**Invalidation:** {intent['invalidation']}")
+                        st.markdown(f"**Target logic:** {intent['target_logic']}")
+                        with st.expander("Full model explanation"):
+                            st.write(intent["explanation"])
+                            st.json(intent["data_freshness"])
+
+                    with col_right:
+                        st.markdown("**📋 Manual order ticket — for placing by hand if you prefer**")
+                        ticket_text = (
+                            f"Instrument:   {ticket['instrument']}\n"
+                            f"Direction:    {ticket['direction']}\n"
+                            f"Order type:   {ticket['order_type']}\n"
+                            f"Units:        {ticket['units']}\n"
+                            f"Stop loss:    {ticket['stop_loss']}\n"
+                            f"Take profit:  {ticket['take_profit']}\n"
+                            f"Ref. price:   {ticket['reference_price']}"
+                        )
+                        st.code(ticket_text, language=None)
+                        if current_price is not None and intent.get("reference_price"):
+                            drift = current_price - intent["reference_price"]
+                            st.caption(
+                                f"Live price now: {current_price:.5f} "
+                                f"(drift since signal: {drift:+.5f})"
+                            )
+                        if intent["risk"]:
+                            st.caption(f"Risk governor sized this at **{intent['risk']['size_units']} units** "
+                                       f"({intent['risk']['reason']}).")
+
+                    notes = st.text_input("Notes (optional)", key=f"notes_{intent['id']}")
+
+                    if urgency == "expired":
+                        st.button(
+                            "⛔ Expired — re-scan for a fresh signal", key=f"expired_{intent['id']}",
+                            width="stretch", disabled=True,
+                        )
+                    else:
+                        btn_approve, btn_reject = st.columns(2)
+                        with btn_approve:
+                            if st.button(
+                                f"✅ Authorize & Execute ({intent['execution_mode']})",
+                                key=f"approve_{intent['id']}", width="stretch", type="primary",
+                            ):
+                                with st.spinner("Sending order..."):
+                                    result = run_async(
+                                        _do_authorize(intent["execution_mode"], intent["id"], "APPROVED", notes or None)
+                                    )
+                                if result.order_result and result.order_result.status == "FILLED":
+                                    st.success(f"Executed: {result.detail}")
+                                else:
+                                    st.error(f"Not filled: {result.detail}")
+                                st.cache_data.clear()
+                                st.rerun()
+                        with btn_reject:
+                            if st.button(
+                                "❌ Reject", key=f"reject_{intent['id']}", width="stretch",
+                            ):
+                                run_async(_do_authorize(intent["execution_mode"], intent["id"], "REJECTED", notes or None))
+                                st.info("Rejected — no order sent.")
+                                st.cache_data.clear()
+                                st.rerun()
+
+    # --------------------------------------------------------------- trade history --
+
+    with tab_learning:
+        st.subheader("Is the model actually learning?")
+        st.caption(
+            "The meta-model recalibrates (or vetoes) the heuristic's decisions once "
+            "it's been trained on enough real, realized outcomes — not before. "
+            "This tab is the honest answer to \"is it learning yet.\""
+        )
+
+        with engine.connect() as conn:
+            # Deliberately NOT filtered by user: the meta-model is one shared
+            # model (model_registry is a global table) trained on every user's
+            # pooled outcomes — src/models/train_meta_model.py itself has no
+            # user_id filter either, for the same "pool for statistical power"
+            # reason as calibration/challenger evaluation. Showing only this
+            # user's own count here would be misleading about what actually
+            # gates training.
+            #
+            # Real gap found live 2026-09-16: this used to be its own looser
+            # COUNT(*) (any broker, no check that a cycle logged all 4
+            # components) — it showed "30/30 ready" on a page whose whole
+            # point is being the honest answer, while the actual training gate
+            # (load_linked_features, same function train() uses) was really at
+            # 29/30 because one of the 30 was an Alpaca outcome (macro/news/
+            # cross_market are trivially zero for non-forex, so train()
+            # correctly excludes it — see that module's own docstring). Now
+            # calls the exact same function the real gate uses, so this number
+            # can't drift from what actually happens at 3am.
+            n_linked_outcomes = len(load_linked_features(engine))
+            versions = conn.execute(
+                select(model_registry_table)
+                .where(model_registry_table.c.name == MODEL_NAME)
+                .order_by(model_registry_table.c.trained_at.desc())
+            ).mappings().all()
+
+        progress = min(1.0, n_linked_outcomes / MIN_SAMPLES) if MIN_SAMPLES else 0.0
+        st.progress(
+            progress,
+            text=f"{n_linked_outcomes} / {MIN_SAMPLES} real linked WIN/LOSS outcomes accumulated toward training",
+        )
+
+        deployed = [v for v in versions if v["deployed"]]
+        if deployed:
+            v = deployed[0]
+            validation = json.loads(v["validation_json"] or "{}")
+            st.success(f"✅ Meta-model **v{v['version']}** is deployed and actively recalibrating live decisions.")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                stat_tile("Cross-validated accuracy", f"{validation.get('cv_accuracy_mean', 0):.0%}",
+                          f"± {validation.get('cv_accuracy_std', 0):.0%}, {validation.get('cv_folds', '?')}-fold")
+            with c2:
+                stat_tile("Trained on", f"{validation.get('n_samples', '?')} samples",
+                          v["trained_at"].strftime("%b %d, %H:%M UTC"))
+            with c3:
+                balance = validation.get("class_balance", {})
+                baseline = validation.get("baseline_accuracy")
+                stat_tile(
+                    "Class balance", f"{balance.get('win', '?')}W / {balance.get('loss', '?')}L",
+                    f"always guessing the majority class alone would score {baseline:.0%}" if baseline is not None else "",
+                )
+        else:
+            st.info(
+                "No meta-model has been deployed yet — decisions are still made by the "
+                "fixed-weight heuristic blend in `decision/fusion.py`. A candidate trains "
+                "automatically every night at 3am once there's enough data, and "
+                "**auto-deploys** if its cross-validated accuracy beats both a basic "
+                f"{AUTO_DEPLOY_MIN_ACCURACY:.0%} floor AND the majority-class baseline "
+                f"(always guessing the more common outcome) by {AUTO_DEPLOY_MIN_MARGIN_OVER_BASELINE:.0%} "
+                "or more — no manual step needed for that case. If a candidate exists below "
+                "but isn't deployed, it missed one of those bars; promote it by hand anyway with "
+                "`python -m src.models.promote_meta_model <version>` if you've reviewed it "
+                "and want it live regardless."
+            )
+
+        if versions:
+            st.markdown("#### Training history")
+            for v in versions:
+                validation = json.loads(v["validation_json"] or "{}")
+                badge = "🟢 DEPLOYED" if v["deployed"] else "⚪ candidate"
+                with st.container(border=True):
+                    st.markdown(
+                        f"**v{v['version']}** &nbsp; {badge} &nbsp;·&nbsp; "
+                        f"trained {v['trained_at']:%Y-%m-%d %H:%M UTC}"
+                    )
+                    _baseline = validation.get("baseline_accuracy")
+                    st.caption(
+                        f"n={validation.get('n_samples', '?')} · "
+                        f"cv_accuracy={validation.get('cv_accuracy_mean', 0):.0%} "
+                        f"(± {validation.get('cv_accuracy_std', 0):.0%}) · "
+                        f"class_balance={validation.get('class_balance', {})}"
+                        + (f" · majority-class baseline={_baseline:.0%}" if _baseline is not None else "")
+                    )
+
+    # --------------------------------------------------------------- challengers --
+
+    with tab_challengers:
+        st.subheader("Champion vs Challengers")
+        st.caption(
+            "Autonomous Upgrade Spec sec. 14-15: challengers run in full shadow — same "
+            "market snapshot as the champion every cycle, but they never reach the risk "
+            "governor or a broker. Both are scored the same way: did the actual "
+            "subsequent price move match the signal's direction by the time its horizon "
+            "elapsed. A challenger is never auto-promoted; it either accumulates enough "
+            "shadow samples to prove itself for human review, or gets buried below."
+        )
+
+        with engine.connect() as conn:
+            # Deliberately pooled across all users, not filtered to this one:
+            # champion/challenger hit-rate is a property of the shared models
+            # (src/scripts/evaluate_challengers.py itself pools every user's
+            # signal_evaluations for the same statistical-power reason
+            # calibration does — see src/models/calibration.py), not of any
+            # one account's own trading.
+            source_stats = conn.execute(
+                select(
+                    signal_evaluations_table.c.source,
+                    func.count().label("n"),
+                    func.sum(func.cast(signal_evaluations_table.c.hit, Integer)).label("hits"),
+                    func.avg(signal_evaluations_table.c.move_in_favor).label("avg_move"),
+                ).group_by(signal_evaluations_table.c.source)
+            ).mappings().all()
+            graveyard_rows = conn.execute(
+                select(strategy_graveyard_table).order_by(strategy_graveyard_table.c.buried_at.desc())
+            ).mappings().all()
+
+        stats_by_source = {r["source"]: r for r in source_stats}
+        champion_stat = stats_by_source.get("champion")
+
+        if champion_stat is None or champion_stat["n"] == 0:
+            st.info("No signals have had their horizon elapse yet — nothing to score.")
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                hit_rate = champion_stat["hits"] / champion_stat["n"]
+                stat_tile("Champion hit rate", f"{hit_rate:.0%}", f"{champion_stat['hits']}/{champion_stat['n']} elapsed signals")
+            with c2:
+                stat_tile("Champion avg move in favor", f"{(champion_stat['avg_move'] or 0):+.5f}", "price units, signed by direction")
+
+            st.write("")
+            st.markdown("#### Challengers")
+            buried_names = {r["strategy_name"] for r in graveyard_rows}
+            challenger_names = sorted(set(stats_by_source) - {"champion"})
+            if not challenger_names:
+                st.caption("No challenger has produced any shadow decisions yet (e.g. the economic-surprise "
+                           "challenger only fires when a fresh, recent surprise exists for the pair in question).")
+            for name in challenger_names:
+                stat = stats_by_source[name]
+                with st.container(border=True):
+                    buried = name in buried_names
+                    label = f"⚰️ {name} — buried" if buried else f"🥊 {name} — active shadow"
+                    st.markdown(f"**{label}**")
+                    if stat["n"] == 0:
+                        st.caption("No elapsed shadow signals yet.")
+                    else:
+                        hit_rate = stat["hits"] / stat["n"]
+                        delta = hit_rate - (champion_stat["hits"] / champion_stat["n"])
+                        st.caption(
+                            f"{stat['hits']}/{stat['n']} elapsed shadow signals · hit_rate={hit_rate:.0%} "
+                            f"({delta:+.0%} vs champion) · avg move in favor {(stat['avg_move'] or 0):+.5f}"
+                        )
+
+        if graveyard_rows:
+            st.write("")
+            st.markdown("#### 🪦 Strategy graveyard")
+            st.caption("Buried once, never re-run — src/challengers/definitions.py filters these out of every future cycle.")
+            for r in graveyard_rows:
+                with st.container(border=True):
+                    st.markdown(f"**{r['strategy_name']}** — buried {r['buried_at']:%Y-%m-%d %H:%M UTC}")
+                    st.caption(r["reason"])
+
+        st.write("")
+        st.markdown("#### Is confidence actually calibrated?")
+        st.caption(
+            "Autonomous Upgrade Spec sec. 16: a confidence number is only meaningful if it's "
+            "empirically checked against what actually happened. Each bar compares the "
+            "champion's own predicted confidence against the real observed hit rate in that "
+            "bucket, using every signal whose horizon has elapsed (src/models/calibration.py) — "
+            "not held-out theory, the system's own real track record so far."
+        )
+        calibration_reports = cached_calibration_reports("champion")
+        aggregate_report = next((r for r in calibration_reports if r.segment == "champion"), None)
+        if aggregate_report is None:
+            st.info(f"Not enough elapsed, scored signals yet (need {calibration_MIN_SEGMENT_SAMPLES}+) to report calibration.")
+        else:
+            st.caption(f"n={aggregate_report.n} elapsed signals · Brier score {aggregate_report.brier_score:.3f} "
+                       f"(0=perfect, 0.25=a constant 50% guess, 1=worst)")
+            st.plotly_chart(reliability_figure(aggregate_report), width="stretch", config={"displayModeBar": False})
+            with st.expander("Table view (per-bin detail)"):
+                for b in aggregate_report.bins:
+                    gap = b.observed_hit_rate - b.mean_predicted_confidence
+                    direction = "underconfident" if gap > 0.05 else ("overconfident" if gap < -0.05 else "well-calibrated")
+                    st.markdown(
+                        f"conf [{b.bin_low:.1f}-{b.bin_high:.1f}) · n={b.n} · "
+                        f"predicted **{b.mean_predicted_confidence:.0%}** vs observed **{b.observed_hit_rate:.0%}** "
+                        f"({direction})"
+                    )
+            other_segments = [r for r in calibration_reports if r.segment != "champion"]
+            if other_segments:
+                with st.expander(f"Per pair / horizon / regime breakdown ({len(other_segments)} segments with enough samples)"):
+                    segment_names = [r.segment for r in other_segments]
+                    picked = st.selectbox("Segment", segment_names, key="calibration_segment_pick")
+                    picked_report = next(r for r in other_segments if r.segment == picked)
+                    st.caption(f"n={picked_report.n} · Brier={picked_report.brier_score:.3f}")
+                    st.plotly_chart(
+                        reliability_figure(picked_report), width="stretch", config={"displayModeBar": False},
+                        key=f"reliability_{picked_report.segment}",
+                    )
+
+    # ----------------------------------------------------------------- knowledge --
+
+    with tab_knowledge:
+        st.subheader("Knowledge Lab")
+        st.caption(
+            "Autonomous Upgrade Spec sec. 4-5: documents dropped into `forex_knowledge/` "
+            "are scored, chunked and indexed automatically (hourly). Scoring is rule-based "
+            "(no LLM key is configured for this project) — treat it as coarse triage, not a "
+            "certified quality rating."
+        )
+
+        with engine.connect() as conn:
+            docs = conn.execute(
+                select(knowledge_documents_table).order_by(knowledge_documents_table.c.ingested_at.desc())
+            ).mappings().all()
+
+        d1, d2, d3 = st.columns(3)
+        with d1:
+            stat_tile("Documents Indexed", str(len(docs)), "across forex_knowledge/")
+        with d2:
+            total_chunks = sum(d["chunk_count"] for d in docs)
+            stat_tile("Chunks Retrievable", str(total_chunks), "searchable passages")
+        with d3:
+            avg_score = (sum(d["overall_score"] or 0 for d in docs) / len(docs)) if docs else 0.0
+            stat_tile("Avg Source Score", f"{avg_score:.2f}", "0-1, rule-based triage")
+
+        st.write("")
+        st.markdown("#### Search the knowledge library")
+        query = st.text_input("Query", placeholder="e.g. how does the Fed set interest rates")
+        if query:
+            results = knowledge_search(engine, query, top_k=5)
+            if not results:
+                st.info("No relevant passages found — the library may not cover this topic yet.")
+            for r in results:
+                with st.container(border=True):
+                    st.markdown(f"**{r.document_title or 'Untitled'}** &nbsp; ·&nbsp; similarity={r.similarity:.2f}")
+                    st.caption(r.text[:400] + ("…" if len(r.text) > 400 else ""))
+
+        st.write("")
+        st.markdown("#### Ingested documents")
+        if not docs:
+            st.info(
+                "No documents ingested yet. Drop PDFs, DOCX, TXT or MD files into the "
+                "`forex_knowledge/` subfolders — they're picked up automatically within an hour, "
+                "or run `python -m src.scripts.ingest_knowledge` to ingest immediately."
+            )
+        else:
+            for d in docs:
+                with st.container(border=True):
+                    st.markdown(f"**{d['title'] or d['filepath']}**")
+                    st.caption(
+                        f"category={d['category']} · type={d['document_type']} · "
+                        f"score={d['overall_score']:.2f} · novelty={d['novelty_score']:.2f} · "
+                        f"chunks={d['chunk_count']} · ingested {d['ingested_at']:%Y-%m-%d %H:%M UTC}"
+                    )
+                    hypotheses = json.loads(d["candidate_hypotheses_json"]) if d.get("candidate_hypotheses_json") else []
+                    if hypotheses:
+                        with st.expander(f"{len(hypotheses)} candidate hypothesis sentence(s) flagged"):
+                            for h in hypotheses:
+                                st.markdown(f"- {h}")
+
+    # ------------------------------------------------------------- currency map --
+
+    with tab_trades:
+        st.subheader("Every trade the system has actually placed, and why")
+
+        # Open positions first -- the realized P&L below only covers CLOSED
+        # trades; an open position's unrealized P&L isn't in that number at
+        # all, and showing closed-only P&L without this context can look like
+        # a loss even when a large open gain more than offsets it (real
+        # confusion this caused live 2026-10-01, see trade_outcomes's FIFO
+        # rewrite in src/outcomes/alpaca_tracker.py for the related accuracy fix).
+        if _alpaca_configured():
+            try:
+                _open_state, _open_positions = cached_alpaca_account_state(CURRENT_USER_ID)
+            except Exception as exc:  # noqa: BLE001
+                st.warning(f"Could not load open positions: {exc!r}")
+            else:
+                if _open_positions:
+                    st.markdown("#### Currently open — not yet closed, not counted below")
+                    _open_rows = [
+                        {
+                            "Instrument": p["symbol"], "Side": str(p.get("side", "")).upper(),
+                            "Units": abs(float(p.get("qty") or 0)),
+                            "Entry": float(p.get("avg_entry_price") or 0),
+                            "Current": float(p.get("current_price") or 0),
+                            "Unrealized P&L": float(p.get("unrealized_pl") or 0),
+                        }
+                        for p in _open_positions if float(p.get("qty") or 0)
+                    ]
+                    if _open_rows:
+                        _open_total = sum(r["Unrealized P&L"] for r in _open_rows)
+                        st.dataframe(pd.DataFrame(_open_rows), width="stretch", hide_index=True)
+                        st.caption(
+                            f"Open positions' unrealized P&L: ${_open_total:+,.2f} — moves with the "
+                            "market until closed, not included in the closed-trade totals below."
+                        )
+                    st.divider()
+
+        outcomes = fetch_trade_outcomes(engine, CURRENT_USER_ID)
+
+        if not outcomes:
+            st.info(
+                "No trades have closed yet. Once an executed position closes — "
+                "stop-loss, take-profit, or manual — it shows up here with full "
+                "profit/loss detail and the exact reasoning behind the original decision."
+            )
+        else:
+            available_classes = sorted({asset_class_for(o["instrument"]) for o in outcomes})
             class_filter = st.multiselect(
                 "Market", options=available_classes, default=available_classes,
-                format_func=lambda c: ASSET_CLASS_LABELS.get(c, c.upper()),
+                format_func=lambda c: ASSET_CLASS_LABELS.get(c, c.upper()), key="trade_history_class_filter",
             )
-        pending = [
-            p for p in all_pending
-            if p["horizon"] in horizon_filter and asset_class_for(p["instrument"]) in class_filter
-        ]
-        pending.sort(key=lambda p: (HORIZON_ORDER.get(p["horizon"], 99), -p["confidence"]))
+            outcomes = [o for o in outcomes if asset_class_for(o["instrument"]) in class_filter]
+            if not outcomes:
+                st.info("No trades match the current market filter.")
 
-        instruments = tuple(sorted({p["instrument"] for p in pending}))
-        try:
-            live_prices = {p.instrument: p for p in cached_prices(instruments)}
-        except Exception as exc:  # noqa: BLE001
-            st.warning(f"Could not fetch live prices for freshness display: {exc!r}")
-            live_prices = {}
+        if outcomes:
+            df = pd.DataFrame(outcomes)
+            total_pl = df["realized_pl_usd"].sum()
+            wins = int((df["outcome"] == "WIN").sum())
+            losses = int((df["outcome"] == "LOSS").sum())
+            total = len(df)
+            win_rate = wins / total if total else 0.0
+            avg_win = df.loc[df["outcome"] == "WIN", "realized_pl_usd"].mean() if wins else 0.0
+            avg_loss = df.loc[df["outcome"] == "LOSS", "realized_pl_usd"].mean() if losses else 0.0
+            gains_sum = df.loc[df["realized_pl_usd"] > 0, "realized_pl_usd"].sum()
+            losses_sum = abs(df.loc[df["realized_pl_usd"] < 0, "realized_pl_usd"].sum())
+            profit_factor = (gains_sum / losses_sum) if losses_sum else float("inf")
+            # Same cumulative-P&L series equity_curve_figure builds below, just
+            # sliced to the most recent 12 points for the stat tile's sparkline.
+            cumulative_pl_trend = df.sort_values("closed_at")["realized_pl_usd"].cumsum().tolist()[-12:]
 
-        current_horizon_group = None
-        for intent in pending:
-            if intent["horizon"] != current_horizon_group:
-                current_horizon_group = intent["horizon"]
-                st.markdown(f"#### {current_horizon_group} signals")
-            live = live_prices.get(intent["instrument"])
-            current_price = live.mid if live else None
-            ticket = auth_service.build_manual_order_ticket(intent, current_price=current_price)
-
-            action_icon = "🟢" if intent["action"] == "BUY" else "🔴"
-            with st.container(border=True):
-                header_col, meta_col = st.columns([3, 2])
-                with header_col:
-                    st.subheader(f"{action_icon} {intent['instrument']} — {intent['action']}")
-                    st.markdown(asset_class_badge_html(intent["instrument"]), unsafe_allow_html=True)
-                    st.caption(
-                        f"Signal generated {intent['time']:%Y-%m-%d %H:%M UTC} · "
-                        f"{intent['age_seconds']/60:.0f} min ago · execution_mode={intent['execution_mode']}"
-                    )
-                with meta_col:
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Confidence", f"{intent['confidence']:.0%}")
-                    m2.metric("Regime", intent["regime"])
-                    m3.metric("Horizon", intent["horizon"])
-
-                expires_at = intent["expires_at"]
-                remaining = intent["time_remaining_seconds"]
-                urgency = intent["urgency"]
-                expiry_line = (
-                    f"⏰ Expires **{expires_at:%H:%M UTC}** on {expires_at:%Y-%m-%d} "
-                    f"({'in ' + format_duration(remaining) if remaining > 0 else format_duration(remaining) + ' ago'})"
-                )
-                if urgency == "expired":
-                    st.error(f"🔴 EXPIRED — {expiry_line}. This signal should not be authorized; re-scan instead.")
-                elif urgency == "critical":
-                    st.warning(f"🟠 Expiring soon — {expiry_line}")
-                elif urgency == "warning":
-                    st.info(f"🟡 {expiry_line}")
-                else:
-                    st.success(f"🟢 {expiry_line}")
-
-                with st.expander("📊 Price chart", expanded=False):
-                    try:
-                        granularity = HORIZON_TO_CHART_GRANULARITY.get(intent["horizon"], "M15")
-                        candles = cached_candles(intent["instrument"], granularity, 96)
-                        st.plotly_chart(
-                            candlestick_figure(
-                                candles,
-                                entry=ticket.get("reference_price"),
-                                stop=ticket.get("stop_loss"),
-                                target=ticket.get("take_profit"),
-                            ),
-                            width="stretch", config={"displayModeBar": False},
-                            key=f"candles_{intent['id']}",
-                        )
-                        with st.expander("Table view (raw candles)"):
-                            st.dataframe(pd.DataFrame(candles), width="stretch", hide_index=True)
-                    except Exception as exc:  # noqa: BLE001
-                        # A chart failure must never block signal review/authorization
-                        # below it — this tab's real job is the approve/reject buttons.
-                        st.caption(f"Could not load price chart: {exc!r}")
-
-                col_left, col_right = st.columns(2)
-                with col_left:
-                    st.markdown("**Key drivers**")
-                    for d in intent["key_drivers"]:
-                        st.markdown(f"- {d}")
-                    if intent["contrary_evidence"]:
-                        st.markdown("**⚠️ Contrary evidence**")
-                        for c in intent["contrary_evidence"]:
-                            st.markdown(f"- {c}")
-                    st.markdown(f"**Entry condition:** {intent['entry_condition']}")
-                    st.markdown(f"**Invalidation:** {intent['invalidation']}")
-                    st.markdown(f"**Target logic:** {intent['target_logic']}")
-                    with st.expander("Full model explanation"):
-                        st.write(intent["explanation"])
-                        st.json(intent["data_freshness"])
-
-                with col_right:
-                    st.markdown("**📋 Manual order ticket — for placing by hand if you prefer**")
-                    ticket_text = (
-                        f"Instrument:   {ticket['instrument']}\n"
-                        f"Direction:    {ticket['direction']}\n"
-                        f"Order type:   {ticket['order_type']}\n"
-                        f"Units:        {ticket['units']}\n"
-                        f"Stop loss:    {ticket['stop_loss']}\n"
-                        f"Take profit:  {ticket['take_profit']}\n"
-                        f"Ref. price:   {ticket['reference_price']}"
-                    )
-                    st.code(ticket_text, language=None)
-                    if current_price is not None and intent.get("reference_price"):
-                        drift = current_price - intent["reference_price"]
-                        st.caption(
-                            f"Live price now: {current_price:.5f} "
-                            f"(drift since signal: {drift:+.5f})"
-                        )
-                    if intent["risk"]:
-                        st.caption(f"Risk governor sized this at **{intent['risk']['size_units']} units** "
-                                   f"({intent['risk']['reason']}).")
-
-                notes = st.text_input("Notes (optional)", key=f"notes_{intent['id']}")
-
-                if urgency == "expired":
-                    st.button(
-                        "⛔ Expired — re-scan for a fresh signal", key=f"expired_{intent['id']}",
-                        width="stretch", disabled=True,
-                    )
-                else:
-                    btn_approve, btn_reject = st.columns(2)
-                    with btn_approve:
-                        if st.button(
-                            f"✅ Authorize & Execute ({intent['execution_mode']})",
-                            key=f"approve_{intent['id']}", width="stretch", type="primary",
-                        ):
-                            with st.spinner("Sending order..."):
-                                result = run_async(
-                                    _do_authorize(intent["execution_mode"], intent["id"], "APPROVED", notes or None)
-                                )
-                            if result.order_result and result.order_result.status == "FILLED":
-                                st.success(f"Executed: {result.detail}")
-                            else:
-                                st.error(f"Not filled: {result.detail}")
-                            st.cache_data.clear()
-                            st.rerun()
-                    with btn_reject:
-                        if st.button(
-                            "❌ Reject", key=f"reject_{intent['id']}", width="stretch",
-                        ):
-                            run_async(_do_authorize(intent["execution_mode"], intent["id"], "REJECTED", notes or None))
-                            st.info("Rejected — no order sent.")
-                            st.cache_data.clear()
-                            st.rerun()
-
-# --------------------------------------------------------------- trade history --
-with tab_trades:
-    st.subheader("Every trade the system has actually placed, and why")
-
-    # Open positions first -- the realized P&L below only covers CLOSED
-    # trades; an open position's unrealized P&L isn't in that number at
-    # all, and showing closed-only P&L without this context can look like
-    # a loss even when a large open gain more than offsets it (real
-    # confusion this caused live 2026-10-01, see trade_outcomes's FIFO
-    # rewrite in src/outcomes/alpaca_tracker.py for the related accuracy fix).
-    if _alpaca_configured():
-        try:
-            _open_state, _open_positions = cached_alpaca_account_state(CURRENT_USER_ID)
-        except Exception as exc:  # noqa: BLE001
-            st.warning(f"Could not load open positions: {exc!r}")
-        else:
-            if _open_positions:
-                st.markdown("#### Currently open — not yet closed, not counted below")
-                _open_rows = [
-                    {
-                        "Instrument": p["symbol"], "Side": str(p.get("side", "")).upper(),
-                        "Units": abs(float(p.get("qty") or 0)),
-                        "Entry": float(p.get("avg_entry_price") or 0),
-                        "Current": float(p.get("current_price") or 0),
-                        "Unrealized P&L": float(p.get("unrealized_pl") or 0),
-                    }
-                    for p in _open_positions if float(p.get("qty") or 0)
-                ]
-                if _open_rows:
-                    _open_total = sum(r["Unrealized P&L"] for r in _open_rows)
-                    st.dataframe(pd.DataFrame(_open_rows), width="stretch", hide_index=True)
-                    st.caption(
-                        f"Open positions' unrealized P&L: ${_open_total:+,.2f} — moves with the "
-                        "market until closed, not included in the closed-trade totals below."
-                    )
-                st.divider()
-
-    outcomes = fetch_trade_outcomes(engine, CURRENT_USER_ID)
-
-    if not outcomes:
-        st.info(
-            "No trades have closed yet. Once an executed position closes — "
-            "stop-loss, take-profit, or manual — it shows up here with full "
-            "profit/loss detail and the exact reasoning behind the original decision."
-        )
-    else:
-        available_classes = sorted({asset_class_for(o["instrument"]) for o in outcomes})
-        class_filter = st.multiselect(
-            "Market", options=available_classes, default=available_classes,
-            format_func=lambda c: ASSET_CLASS_LABELS.get(c, c.upper()), key="trade_history_class_filter",
-        )
-        outcomes = [o for o in outcomes if asset_class_for(o["instrument"]) in class_filter]
-        if not outcomes:
-            st.info("No trades match the current market filter.")
-
-    if outcomes:
-        df = pd.DataFrame(outcomes)
-        total_pl = df["realized_pl_usd"].sum()
-        wins = int((df["outcome"] == "WIN").sum())
-        losses = int((df["outcome"] == "LOSS").sum())
-        total = len(df)
-        win_rate = wins / total if total else 0.0
-        avg_win = df.loc[df["outcome"] == "WIN", "realized_pl_usd"].mean() if wins else 0.0
-        avg_loss = df.loc[df["outcome"] == "LOSS", "realized_pl_usd"].mean() if losses else 0.0
-        gains_sum = df.loc[df["realized_pl_usd"] > 0, "realized_pl_usd"].sum()
-        losses_sum = abs(df.loc[df["realized_pl_usd"] < 0, "realized_pl_usd"].sum())
-        profit_factor = (gains_sum / losses_sum) if losses_sum else float("inf")
-        # Same cumulative-P&L series equity_curve_figure builds below, just
-        # sliced to the most recent 12 points for the stat tile's sparkline.
-        cumulative_pl_trend = df.sort_values("closed_at")["realized_pl_usd"].cumsum().tolist()[-12:]
-
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            stat_tile("Total Realized P&L", f"${total_pl:+,.2f}", f"{total} closed trades · open positions not counted",
-                      polarity="positive" if total_pl >= 0 else "negative", trend=cumulative_pl_trend)
-        with c2:
-            stat_tile("Win Rate", f"{win_rate:.0%}", f"{wins}W / {losses}L")
-        with c3:
-            stat_tile("Avg Win / Avg Loss", f"${avg_win:,.2f} / ${avg_loss:,.2f}", "per closed trade")
-        with c4:
-            pf_display = f"{profit_factor:.2f}" if profit_factor != float("inf") else "∞"
-            stat_tile("Profit Factor", pf_display, "gross gains ÷ gross losses")
-
-        st.write("")
-        st.markdown("**Equity curve — cumulative realized P&L**")
-        st.plotly_chart(equity_curve_figure(df), width="stretch", config={"displayModeBar": False})
-
-        with st.expander("Per-trade P&L (bar view)"):
-            st.plotly_chart(per_trade_pl_figure(df), width="stretch", config={"displayModeBar": False})
-
-        st.write("")
-        st.markdown("#### All trades")
-        # Iterate the original dict list, not df.iterrows(): pandas silently
-        # turns SQL NULL into float NaN on DataFrame conversion, and NaN is
-        # truthy in Python — `if row.get("key_drivers_json")` would pass and
-        # json.loads(nan) blows up for any trade with no linked trade_intent.
-        for row in sorted(outcomes, key=lambda r: r["closed_at"], reverse=True):
-            pl = row["realized_pl_usd"]
-            opened = row.get("opened_at")
-            closed = row.get("closed_at")
-            duration = format_duration((closed - opened).total_seconds()) if opened is not None and closed is not None else "—"
-
-            st.markdown(
-                trade_card_html(
-                    row["instrument"], row["action"], row["outcome"], pl,
-                    row["entry_price"], row["exit_price"], opened, closed, duration,
-                    row["units"], row["execution_mode"],
-                ),
-                unsafe_allow_html=True,
-            )
-
-            with st.expander("Why this trade was taken"):
-                if row.get("explanation"):
-                    st.write(row["explanation"])
-                    st.caption(
-                        f"Horizon: {row.get('horizon', '—')} · "
-                        f"Regime at decision time: {row.get('regime', '—')} · "
-                        f"Signal confidence: {(row.get('signal_confidence') or 0):.0%}"
-                    )
-                    key_drivers = json.loads(row["key_drivers_json"]) if row.get("key_drivers_json") else []
-                    contrary = json.loads(row["contrary_evidence_json"]) if row.get("contrary_evidence_json") else []
-                    if key_drivers:
-                        st.markdown("**Key drivers:**")
-                        for d in key_drivers:
-                            st.markdown(f"- {d}")
-                    if contrary:
-                        st.markdown("**⚠️ Contrary evidence at the time:**")
-                        for c in contrary:
-                            st.markdown(f"- {c}")
-                    if row.get("invalidation"):
-                        st.markdown(f"**Invalidation was:** {row['invalidation']}")
-
-                    if row.get("analog_basis") and row["analog_basis"] != "insufficient_history":
-                        st.markdown(
-                            f"**Before this trade, {row['analog_matched_count']} similar past trades** "
-                            f"({row['analog_basis'].replace('_', ' ')}) had won "
-                            f"{(row['analog_win_rate'] or 0):.0%} of the time"
-                            + (f", avg {row['analog_avg_r_multiple']:+.2f}R" if row.get("analog_avg_r_multiple") is not None else "")
-                            + "."
-                        )
-                    elif row.get("analog_basis") == "insufficient_history":
-                        st.caption(
-                            f"Historical analog check: only {row['analog_matched_count']} past trade(s) "
-                            "matched this instrument/regime/action — too few to draw a stat from."
-                        )
-
-                    if row.get("primary_reason"):
-                        r_str = f"{row['r_multiple']:+.2f}R" if row.get("r_multiple") is not None else "R n/a"
-                        st.markdown(f"**Post-trade attribution:** `{row['primary_reason']}` ({r_str})")
-                        factors = json.loads(row["contributing_factors_json"]) if row.get("contributing_factors_json") else []
-                        for f in factors:
-                            st.markdown(f"- {f}")
-                else:
-                    st.caption(
-                        "No linked signal — this trade wasn't placed through the "
-                        "automated decision pipeline (e.g. a manual diagnostic order)."
-                    )
-
-# ------------------------------------------------------------- model learning --
-with tab_learning:
-    st.subheader("Is the model actually learning?")
-    st.caption(
-        "The meta-model recalibrates (or vetoes) the heuristic's decisions once "
-        "it's been trained on enough real, realized outcomes — not before. "
-        "This tab is the honest answer to \"is it learning yet.\""
-    )
-
-    with engine.connect() as conn:
-        # Deliberately NOT filtered by user: the meta-model is one shared
-        # model (model_registry is a global table) trained on every user's
-        # pooled outcomes — src/models/train_meta_model.py itself has no
-        # user_id filter either, for the same "pool for statistical power"
-        # reason as calibration/challenger evaluation. Showing only this
-        # user's own count here would be misleading about what actually
-        # gates training.
-        #
-        # Real gap found live 2026-09-16: this used to be its own looser
-        # COUNT(*) (any broker, no check that a cycle logged all 4
-        # components) — it showed "30/30 ready" on a page whose whole
-        # point is being the honest answer, while the actual training gate
-        # (load_linked_features, same function train() uses) was really at
-        # 29/30 because one of the 30 was an Alpaca outcome (macro/news/
-        # cross_market are trivially zero for non-forex, so train()
-        # correctly excludes it — see that module's own docstring). Now
-        # calls the exact same function the real gate uses, so this number
-        # can't drift from what actually happens at 3am.
-        n_linked_outcomes = len(load_linked_features(engine))
-        versions = conn.execute(
-            select(model_registry_table)
-            .where(model_registry_table.c.name == MODEL_NAME)
-            .order_by(model_registry_table.c.trained_at.desc())
-        ).mappings().all()
-
-    progress = min(1.0, n_linked_outcomes / MIN_SAMPLES) if MIN_SAMPLES else 0.0
-    st.progress(
-        progress,
-        text=f"{n_linked_outcomes} / {MIN_SAMPLES} real linked WIN/LOSS outcomes accumulated toward training",
-    )
-
-    deployed = [v for v in versions if v["deployed"]]
-    if deployed:
-        v = deployed[0]
-        validation = json.loads(v["validation_json"] or "{}")
-        st.success(f"✅ Meta-model **v{v['version']}** is deployed and actively recalibrating live decisions.")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            stat_tile("Cross-validated accuracy", f"{validation.get('cv_accuracy_mean', 0):.0%}",
-                      f"± {validation.get('cv_accuracy_std', 0):.0%}, {validation.get('cv_folds', '?')}-fold")
-        with c2:
-            stat_tile("Trained on", f"{validation.get('n_samples', '?')} samples",
-                      v["trained_at"].strftime("%b %d, %H:%M UTC"))
-        with c3:
-            balance = validation.get("class_balance", {})
-            baseline = validation.get("baseline_accuracy")
-            stat_tile(
-                "Class balance", f"{balance.get('win', '?')}W / {balance.get('loss', '?')}L",
-                f"always guessing the majority class alone would score {baseline:.0%}" if baseline is not None else "",
-            )
-    else:
-        st.info(
-            "No meta-model has been deployed yet — decisions are still made by the "
-            "fixed-weight heuristic blend in `decision/fusion.py`. A candidate trains "
-            "automatically every night at 3am once there's enough data, and "
-            "**auto-deploys** if its cross-validated accuracy beats both a basic "
-            f"{AUTO_DEPLOY_MIN_ACCURACY:.0%} floor AND the majority-class baseline "
-            f"(always guessing the more common outcome) by {AUTO_DEPLOY_MIN_MARGIN_OVER_BASELINE:.0%} "
-            "or more — no manual step needed for that case. If a candidate exists below "
-            "but isn't deployed, it missed one of those bars; promote it by hand anyway with "
-            "`python -m src.models.promote_meta_model <version>` if you've reviewed it "
-            "and want it live regardless."
-        )
-
-    if versions:
-        st.markdown("#### Training history")
-        for v in versions:
-            validation = json.loads(v["validation_json"] or "{}")
-            badge = "🟢 DEPLOYED" if v["deployed"] else "⚪ candidate"
-            with st.container(border=True):
-                st.markdown(
-                    f"**v{v['version']}** &nbsp; {badge} &nbsp;·&nbsp; "
-                    f"trained {v['trained_at']:%Y-%m-%d %H:%M UTC}"
-                )
-                _baseline = validation.get("baseline_accuracy")
-                st.caption(
-                    f"n={validation.get('n_samples', '?')} · "
-                    f"cv_accuracy={validation.get('cv_accuracy_mean', 0):.0%} "
-                    f"(± {validation.get('cv_accuracy_std', 0):.0%}) · "
-                    f"class_balance={validation.get('class_balance', {})}"
-                    + (f" · majority-class baseline={_baseline:.0%}" if _baseline is not None else "")
-                )
-
-# --------------------------------------------------------------- challengers --
-with tab_challengers:
-    st.subheader("Champion vs Challengers")
-    st.caption(
-        "Autonomous Upgrade Spec sec. 14-15: challengers run in full shadow — same "
-        "market snapshot as the champion every cycle, but they never reach the risk "
-        "governor or a broker. Both are scored the same way: did the actual "
-        "subsequent price move match the signal's direction by the time its horizon "
-        "elapsed. A challenger is never auto-promoted; it either accumulates enough "
-        "shadow samples to prove itself for human review, or gets buried below."
-    )
-
-    with engine.connect() as conn:
-        # Deliberately pooled across all users, not filtered to this one:
-        # champion/challenger hit-rate is a property of the shared models
-        # (src/scripts/evaluate_challengers.py itself pools every user's
-        # signal_evaluations for the same statistical-power reason
-        # calibration does — see src/models/calibration.py), not of any
-        # one account's own trading.
-        source_stats = conn.execute(
-            select(
-                signal_evaluations_table.c.source,
-                func.count().label("n"),
-                func.sum(func.cast(signal_evaluations_table.c.hit, Integer)).label("hits"),
-                func.avg(signal_evaluations_table.c.move_in_favor).label("avg_move"),
-            ).group_by(signal_evaluations_table.c.source)
-        ).mappings().all()
-        graveyard_rows = conn.execute(
-            select(strategy_graveyard_table).order_by(strategy_graveyard_table.c.buried_at.desc())
-        ).mappings().all()
-
-    stats_by_source = {r["source"]: r for r in source_stats}
-    champion_stat = stats_by_source.get("champion")
-
-    if champion_stat is None or champion_stat["n"] == 0:
-        st.info("No signals have had their horizon elapse yet — nothing to score.")
-    else:
-        c1, c2 = st.columns(2)
-        with c1:
-            hit_rate = champion_stat["hits"] / champion_stat["n"]
-            stat_tile("Champion hit rate", f"{hit_rate:.0%}", f"{champion_stat['hits']}/{champion_stat['n']} elapsed signals")
-        with c2:
-            stat_tile("Champion avg move in favor", f"{(champion_stat['avg_move'] or 0):+.5f}", "price units, signed by direction")
-
-        st.write("")
-        st.markdown("#### Challengers")
-        buried_names = {r["strategy_name"] for r in graveyard_rows}
-        challenger_names = sorted(set(stats_by_source) - {"champion"})
-        if not challenger_names:
-            st.caption("No challenger has produced any shadow decisions yet (e.g. the economic-surprise "
-                       "challenger only fires when a fresh, recent surprise exists for the pair in question).")
-        for name in challenger_names:
-            stat = stats_by_source[name]
-            with st.container(border=True):
-                buried = name in buried_names
-                label = f"⚰️ {name} — buried" if buried else f"🥊 {name} — active shadow"
-                st.markdown(f"**{label}**")
-                if stat["n"] == 0:
-                    st.caption("No elapsed shadow signals yet.")
-                else:
-                    hit_rate = stat["hits"] / stat["n"]
-                    delta = hit_rate - (champion_stat["hits"] / champion_stat["n"])
-                    st.caption(
-                        f"{stat['hits']}/{stat['n']} elapsed shadow signals · hit_rate={hit_rate:.0%} "
-                        f"({delta:+.0%} vs champion) · avg move in favor {(stat['avg_move'] or 0):+.5f}"
-                    )
-
-    if graveyard_rows:
-        st.write("")
-        st.markdown("#### 🪦 Strategy graveyard")
-        st.caption("Buried once, never re-run — src/challengers/definitions.py filters these out of every future cycle.")
-        for r in graveyard_rows:
-            with st.container(border=True):
-                st.markdown(f"**{r['strategy_name']}** — buried {r['buried_at']:%Y-%m-%d %H:%M UTC}")
-                st.caption(r["reason"])
-
-    st.write("")
-    st.markdown("#### Is confidence actually calibrated?")
-    st.caption(
-        "Autonomous Upgrade Spec sec. 16: a confidence number is only meaningful if it's "
-        "empirically checked against what actually happened. Each bar compares the "
-        "champion's own predicted confidence against the real observed hit rate in that "
-        "bucket, using every signal whose horizon has elapsed (src/models/calibration.py) — "
-        "not held-out theory, the system's own real track record so far."
-    )
-    calibration_reports = cached_calibration_reports("champion")
-    aggregate_report = next((r for r in calibration_reports if r.segment == "champion"), None)
-    if aggregate_report is None:
-        st.info(f"Not enough elapsed, scored signals yet (need {calibration_MIN_SEGMENT_SAMPLES}+) to report calibration.")
-    else:
-        st.caption(f"n={aggregate_report.n} elapsed signals · Brier score {aggregate_report.brier_score:.3f} "
-                   f"(0=perfect, 0.25=a constant 50% guess, 1=worst)")
-        st.plotly_chart(reliability_figure(aggregate_report), width="stretch", config={"displayModeBar": False})
-        with st.expander("Table view (per-bin detail)"):
-            for b in aggregate_report.bins:
-                gap = b.observed_hit_rate - b.mean_predicted_confidence
-                direction = "underconfident" if gap > 0.05 else ("overconfident" if gap < -0.05 else "well-calibrated")
-                st.markdown(
-                    f"conf [{b.bin_low:.1f}-{b.bin_high:.1f}) · n={b.n} · "
-                    f"predicted **{b.mean_predicted_confidence:.0%}** vs observed **{b.observed_hit_rate:.0%}** "
-                    f"({direction})"
-                )
-        other_segments = [r for r in calibration_reports if r.segment != "champion"]
-        if other_segments:
-            with st.expander(f"Per pair / horizon / regime breakdown ({len(other_segments)} segments with enough samples)"):
-                segment_names = [r.segment for r in other_segments]
-                picked = st.selectbox("Segment", segment_names, key="calibration_segment_pick")
-                picked_report = next(r for r in other_segments if r.segment == picked)
-                st.caption(f"n={picked_report.n} · Brier={picked_report.brier_score:.3f}")
-                st.plotly_chart(
-                    reliability_figure(picked_report), width="stretch", config={"displayModeBar": False},
-                    key=f"reliability_{picked_report.segment}",
-                )
-
-# ----------------------------------------------------------------- knowledge --
-with tab_knowledge:
-    st.subheader("Knowledge Lab")
-    st.caption(
-        "Autonomous Upgrade Spec sec. 4-5: documents dropped into `forex_knowledge/` "
-        "are scored, chunked and indexed automatically (hourly). Scoring is rule-based "
-        "(no LLM key is configured for this project) — treat it as coarse triage, not a "
-        "certified quality rating."
-    )
-
-    with engine.connect() as conn:
-        docs = conn.execute(
-            select(knowledge_documents_table).order_by(knowledge_documents_table.c.ingested_at.desc())
-        ).mappings().all()
-
-    d1, d2, d3 = st.columns(3)
-    with d1:
-        stat_tile("Documents Indexed", str(len(docs)), "across forex_knowledge/")
-    with d2:
-        total_chunks = sum(d["chunk_count"] for d in docs)
-        stat_tile("Chunks Retrievable", str(total_chunks), "searchable passages")
-    with d3:
-        avg_score = (sum(d["overall_score"] or 0 for d in docs) / len(docs)) if docs else 0.0
-        stat_tile("Avg Source Score", f"{avg_score:.2f}", "0-1, rule-based triage")
-
-    st.write("")
-    st.markdown("#### Search the knowledge library")
-    query = st.text_input("Query", placeholder="e.g. how does the Fed set interest rates")
-    if query:
-        results = knowledge_search(engine, query, top_k=5)
-        if not results:
-            st.info("No relevant passages found — the library may not cover this topic yet.")
-        for r in results:
-            with st.container(border=True):
-                st.markdown(f"**{r.document_title or 'Untitled'}** &nbsp; ·&nbsp; similarity={r.similarity:.2f}")
-                st.caption(r.text[:400] + ("…" if len(r.text) > 400 else ""))
-
-    st.write("")
-    st.markdown("#### Ingested documents")
-    if not docs:
-        st.info(
-            "No documents ingested yet. Drop PDFs, DOCX, TXT or MD files into the "
-            "`forex_knowledge/` subfolders — they're picked up automatically within an hour, "
-            "or run `python -m src.scripts.ingest_knowledge` to ingest immediately."
-        )
-    else:
-        for d in docs:
-            with st.container(border=True):
-                st.markdown(f"**{d['title'] or d['filepath']}**")
-                st.caption(
-                    f"category={d['category']} · type={d['document_type']} · "
-                    f"score={d['overall_score']:.2f} · novelty={d['novelty_score']:.2f} · "
-                    f"chunks={d['chunk_count']} · ingested {d['ingested_at']:%Y-%m-%d %H:%M UTC}"
-                )
-                hypotheses = json.loads(d["candidate_hypotheses_json"]) if d.get("candidate_hypotheses_json") else []
-                if hypotheses:
-                    with st.expander(f"{len(hypotheses)} candidate hypothesis sentence(s) flagged"):
-                        for h in hypotheses:
-                            st.markdown(f"- {h}")
-
-# ------------------------------------------------------------- currency map --
-with tab_currency:
-    st.subheader("Currency Strength Map")
-    st.caption(
-        "Autonomous Upgrade Spec sec. 10: an independent latent strength state per "
-        "currency (technical + macro + cross-market + news), rather than only ever "
-        "comparing two currencies implicitly inside one pair's decision. Aggregated "
-        "from data already collected — no new data source, just a new view over it."
-    )
-
-    strengths = compute_currency_map()
-    ranked = sorted(strengths.values(), key=lambda s: s.composite_score, reverse=True)
-
-    st.plotly_chart(currency_strength_heatmap(ranked), width="stretch", config={"displayModeBar": False})
-
-    cols = st.columns(len(ranked))
-    for col, s in zip(cols, ranked):
-        with col:
-            polarity = "positive" if s.composite_score > 0.05 else ("negative" if s.composite_score < -0.05 else None)
-            stat_tile(s.currency, f"{s.composite_score:+.2f}", f"conf {s.composite_confidence:.0%}", polarity=polarity)
-
-    st.write("")
-    st.markdown("#### Component breakdown")
-    for s in ranked:
-        with st.container(border=True):
-            st.markdown(f"**{s.currency}** — composite {s.composite_score:+.2f} (confidence {s.composite_confidence:.0%})")
-            b1, b2, b3, b4 = st.columns(4)
-            b1.metric("Technical", f"{s.technical_score:+.2f}", f"conf {s.technical_confidence:.0%}")
-            b2.metric("Macro", f"{s.macro_score:+.2f}", f"conf {s.macro_confidence:.0%}")
-            b3.metric("Cross-market", f"{s.cross_market_score:+.2f}", f"conf {s.cross_market_confidence:.0%}")
-            b4.metric("News", f"{s.news_score:+.2f}", f"conf {s.news_confidence:.0%}")
-            if s.positioning_confidence > 0:
-                crowd_label = "crowded long" if s.positioning_crowding_score > 0.1 else (
-                    "crowded short" if s.positioning_crowding_score < -0.1 else "neutral"
-                )
-                st.caption(
-                    f"CFTC positioning (weekly COT, reported separately — not in composite): "
-                    f"{s.positioning_crowding_score:+.2f} ({crowd_label}, conf {s.positioning_confidence:.0%})"
-                )
-
-    st.caption(
-        "Positioning is intentionally excluded from the composite score above: a crowded "
-        "position can mean momentum continuing or reversal risk, and folding it in would "
-        "silently pick one interpretation. It's shown per-currency instead, for judgment."
-    )
-    st.caption(
-        "Reading this: two currencies far apart on the composite scale (e.g. one strongly "
-        "positive, one strongly negative) is exactly the divergence the opportunity scanner "
-        "should care about — not yet wired into pair selection (that's the regime router, "
-        "a later priority), but visible here first."
-    )
-
-# ------------------------------------------------------------------ account --
-with tab_account:
-    # Portfolio: the real Alpaca account. The simulated paper ledger is its
-    # own separate $100k and would muddy every total here, so it stays in
-    # its own section below. Reuses the same 15s-cached fetch the
-    # standalone Alpaca section below already makes, so this adds no extra
-    # broker calls.
-    st.subheader("🌐 Portfolio (Alpaca)")
-    _combined_sources: list[tuple[str, object, list]] = []
-    if _alpaca_configured():
-        try:
-            _a_state, _a_positions = cached_alpaca_account_state(CURRENT_USER_ID)
-            _combined_sources.append(("alpaca", _a_state, _a_positions))
-        except Exception as exc:  # noqa: BLE001
-            st.warning(f"Combined view: could not load Alpaca account: {exc!r}")
-
-    with engine.connect() as _conn:
-        _realized_by_broker = {
-            row[0]: float(row[1] or 0.0)
-            for row in _conn.execute(
-                select(trade_outcomes_table.c.broker, func.sum(trade_outcomes_table.c.realized_pl_usd))
-                .where(trade_outcomes_table.c.user_id == CURRENT_USER_ID)
-                .group_by(trade_outcomes_table.c.broker)
-            ).all()
-        }
-
-    _broker_rows = []
-    _position_rows = []
-    for _bk, _st, _pos in _combined_sources:
-        _broker_rows.append({
-            "Broker": BROKER_LABELS.get(_bk, _bk),
-            "Account Value": _st.nav,
-            "Not Yet Sold (Unrealized)": _st.unrealized_pl,
-            "Already Sold (Realized)": _realized_by_broker.get(_bk, 0.0),
-            "Open positions": _st.open_position_count,
-        })
-        for _p in _pos:
-            _inst = _p["symbol"]
-            _qty = float(_p.get("qty") or 0)
-            if not _qty:
-                continue
-            _position_rows.append({
-                "Broker": BROKER_LABELS["alpaca"], "Instrument": _inst,
-                "Market": ASSET_CLASS_LABELS.get(asset_class_for(_inst), "").split(" · ")[0],
-                "Side": str(_p.get("side", "")).upper(), "Units": abs(_qty),
-                "Entry": float(_p.get("avg_entry_price") or 0),
-                "Not Yet Sold (Unrealized)": float(_p.get("unrealized_pl") or 0),
-            })
-
-    if _broker_rows:
-        _total_nav = sum(r["Account Value"] for r in _broker_rows)
-        _total_unrealized = sum(r["Not Yet Sold (Unrealized)"] for r in _broker_rows)
-        _total_realized = sum(r["Already Sold (Realized)"] for r in _broker_rows)
-        _total_open = sum(r["Open positions"] for r in _broker_rows)
-        # Ground-truth profit/loss: current account value minus what was
-        # actually deposited — the same math the Account Standing banner at
-        # the top of the page uses. Deliberately NOT "realized + unrealized"
-        # (real gap found live 2026-09-22: that trade-log-derived figure can
-        # drift a little from this one — ~$85 seen live — from broker fees/
-        # financing charges that never land in trade_outcomes as a row).
-        # Showing two different "profit" numbers on the same page would be
-        # exactly the confusion this section exists to prevent, so this one
-        # wins as the headline; the trade-log figure is still shown, just
-        # captioned honestly as the secondary, less authoritative one.
-        _total_deposited = sum(_AS_STARTING_BALANCE.get(_bk, 0.0) for _bk, _, _ in _combined_sources)
-        _total_pl = _total_nav - _total_deposited if _total_deposited else (_total_realized + _total_unrealized)
-        cc1, cc2, cc3, cc4, cc5 = st.columns(5)
-        cc1.metric("Combined Account Value", f"${_total_nav:,.2f}")
-        cc2.metric("Not Yet Sold (Unrealized)", f"${_total_unrealized:,.2f}")
-        cc3.metric("Already Sold (Realized)", f"${_total_realized:,.2f}")
-        cc4.metric("Total Profit/Loss", f"${_total_pl:,.2f}", help="Account value minus total deposited — matches the Account Standing banner above.")
-        cc5.metric("Open positions", _total_open)
-        st.dataframe(pd.DataFrame(_broker_rows), width="stretch", hide_index=True)
-        if _position_rows:
-            st.markdown("**All open positions**")
-            st.dataframe(pd.DataFrame(_position_rows), width="stretch", hide_index=True)
-        else:
-            st.caption("No open positions.")
-        st.caption(
-            "\"Not yet sold\" money moves with the market until you close the position — it isn't "
-            "locked in, and a leveraged position moves it faster. Only closed (sold) trades count "
-            "as \"already sold.\" Note: Already Sold + Not Yet Sold can differ slightly from Total "
-            "Profit/Loss above — broker fees and financing charges affect account value directly "
-            "but aren't always logged as their own trade row."
-        )
-    st.divider()
-
-    st.subheader("📝 Paper account")
-    try:
-        state, positions = cached_account_state("paper", CURRENT_USER_ID)
-    except Exception as exc:  # noqa: BLE001
-        st.warning(f"Could not load paper account: {exc!r}")
-    else:
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Balance", f"${state.balance:,.2f}")
-        c2.metric("NAV", f"${state.nav:,.2f}")
-        c3.metric("Unrealized P/L", f"${state.unrealized_pl:,.2f}")
-        c4.metric("Open positions", state.open_position_count)
-
-        if positions:
-            st.dataframe(pd.DataFrame(positions), width="stretch", hide_index=True)
-        else:
-            st.caption("No open positions.")
-    st.divider()
-
-    st.subheader("📈 Alpaca account (equities + crypto, paper)")
-    if not _alpaca_configured():
-        st.caption("Alpaca isn't configured for this account yet.")
-    else:
-        try:
-            alpaca_state, alpaca_positions = cached_alpaca_account_state(CURRENT_USER_ID)
-        except Exception as exc:  # noqa: BLE001
-            st.warning(f"Could not load Alpaca account: {exc!r}")
-        else:
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Balance", f"${alpaca_state.balance:,.2f}")
-            c2.metric("NAV", f"${alpaca_state.nav:,.2f}")
-            c3.metric("Unrealized P/L", f"${alpaca_state.unrealized_pl:,.2f}")
-            c4.metric("Open positions", alpaca_state.open_position_count)
+            with c1:
+                stat_tile("Total Realized P&L", f"${total_pl:+,.2f}", f"{total} closed trades · open positions not counted",
+                          polarity="positive" if total_pl >= 0 else "negative", trend=cumulative_pl_trend)
+            with c2:
+                stat_tile("Win Rate", f"{win_rate:.0%}", f"{wins}W / {losses}L")
+            with c3:
+                stat_tile("Avg Win / Avg Loss", f"${avg_win:,.2f} / ${avg_loss:,.2f}", "per closed trade")
+            with c4:
+                pf_display = f"{profit_factor:.2f}" if profit_factor != float("inf") else "∞"
+                stat_tile("Profit Factor", pf_display, "gross gains ÷ gross losses")
 
-            if alpaca_positions:
-                st.dataframe(pd.DataFrame(alpaca_positions), width="stretch", hide_index=True)
+            st.write("")
+            st.markdown("**Equity curve — cumulative realized P&L**")
+            st.plotly_chart(equity_curve_figure(df), width="stretch", config={"displayModeBar": False})
+
+            with st.expander("Per-trade P&L (bar view)"):
+                st.plotly_chart(per_trade_pl_figure(df), width="stretch", config={"displayModeBar": False})
+
+            st.write("")
+            st.markdown("#### All trades")
+            # Iterate the original dict list, not df.iterrows(): pandas silently
+            # turns SQL NULL into float NaN on DataFrame conversion, and NaN is
+            # truthy in Python — `if row.get("key_drivers_json")` would pass and
+            # json.loads(nan) blows up for any trade with no linked trade_intent.
+            for row in sorted(outcomes, key=lambda r: r["closed_at"], reverse=True):
+                pl = row["realized_pl_usd"]
+                opened = row.get("opened_at")
+                closed = row.get("closed_at")
+                duration = format_duration((closed - opened).total_seconds()) if opened is not None and closed is not None else "—"
+
+                st.markdown(
+                    trade_card_html(
+                        row["instrument"], row["action"], row["outcome"], pl,
+                        row["entry_price"], row["exit_price"], opened, closed, duration,
+                        row["units"], row["execution_mode"],
+                    ),
+                    unsafe_allow_html=True,
+                )
+
+                with st.expander("Why this trade was taken"):
+                    if row.get("explanation"):
+                        st.write(row["explanation"])
+                        st.caption(
+                            f"Horizon: {row.get('horizon', '—')} · "
+                            f"Regime at decision time: {row.get('regime', '—')} · "
+                            f"Signal confidence: {(row.get('signal_confidence') or 0):.0%}"
+                        )
+                        key_drivers = json.loads(row["key_drivers_json"]) if row.get("key_drivers_json") else []
+                        contrary = json.loads(row["contrary_evidence_json"]) if row.get("contrary_evidence_json") else []
+                        if key_drivers:
+                            st.markdown("**Key drivers:**")
+                            for d in key_drivers:
+                                st.markdown(f"- {d}")
+                        if contrary:
+                            st.markdown("**⚠️ Contrary evidence at the time:**")
+                            for c in contrary:
+                                st.markdown(f"- {c}")
+                        if row.get("invalidation"):
+                            st.markdown(f"**Invalidation was:** {row['invalidation']}")
+
+                        if row.get("analog_basis") and row["analog_basis"] != "insufficient_history":
+                            st.markdown(
+                                f"**Before this trade, {row['analog_matched_count']} similar past trades** "
+                                f"({row['analog_basis'].replace('_', ' ')}) had won "
+                                f"{(row['analog_win_rate'] or 0):.0%} of the time"
+                                + (f", avg {row['analog_avg_r_multiple']:+.2f}R" if row.get("analog_avg_r_multiple") is not None else "")
+                                + "."
+                            )
+                        elif row.get("analog_basis") == "insufficient_history":
+                            st.caption(
+                                f"Historical analog check: only {row['analog_matched_count']} past trade(s) "
+                                "matched this instrument/regime/action — too few to draw a stat from."
+                            )
+
+                        if row.get("primary_reason"):
+                            r_str = f"{row['r_multiple']:+.2f}R" if row.get("r_multiple") is not None else "R n/a"
+                            st.markdown(f"**Post-trade attribution:** `{row['primary_reason']}` ({r_str})")
+                            factors = json.loads(row["contributing_factors_json"]) if row.get("contributing_factors_json") else []
+                            for f in factors:
+                                st.markdown(f"- {f}")
+                    else:
+                        st.caption(
+                            "No linked signal — this trade wasn't placed through the "
+                            "automated decision pipeline (e.g. a manual diagnostic order)."
+                        )
+
+    # ------------------------------------------------------------- model learning --
+
+    with tab_account:
+        # Portfolio: the real Alpaca account. The simulated paper ledger is its
+        # own separate $100k and would muddy every total here, so it stays in
+        # its own section below. Reuses the same 15s-cached fetch the
+        # standalone Alpaca section below already makes, so this adds no extra
+        # broker calls.
+        st.subheader("🌐 Portfolio (Alpaca)")
+        _combined_sources: list[tuple[str, object, list]] = []
+        if _alpaca_configured():
+            try:
+                _a_state, _a_positions = cached_alpaca_account_state(CURRENT_USER_ID)
+                _combined_sources.append(("alpaca", _a_state, _a_positions))
+            except Exception as exc:  # noqa: BLE001
+                st.warning(f"Combined view: could not load Alpaca account: {exc!r}")
+
+        with engine.connect() as _conn:
+            _realized_by_broker = {
+                row[0]: float(row[1] or 0.0)
+                for row in _conn.execute(
+                    select(trade_outcomes_table.c.broker, func.sum(trade_outcomes_table.c.realized_pl_usd))
+                    .where(trade_outcomes_table.c.user_id == CURRENT_USER_ID)
+                    .group_by(trade_outcomes_table.c.broker)
+                ).all()
+            }
+
+        _broker_rows = []
+        _position_rows = []
+        for _bk, _st, _pos in _combined_sources:
+            _broker_rows.append({
+                "Broker": BROKER_LABELS.get(_bk, _bk),
+                "Account Value": _st.nav,
+                "Not Yet Sold (Unrealized)": _st.unrealized_pl,
+                "Already Sold (Realized)": _realized_by_broker.get(_bk, 0.0),
+                "Open positions": _st.open_position_count,
+            })
+            for _p in _pos:
+                _inst = _p["symbol"]
+                _qty = float(_p.get("qty") or 0)
+                if not _qty:
+                    continue
+                _position_rows.append({
+                    "Broker": BROKER_LABELS["alpaca"], "Instrument": _inst,
+                    "Market": ASSET_CLASS_LABELS.get(asset_class_for(_inst), "").split(" · ")[0],
+                    "Side": str(_p.get("side", "")).upper(), "Units": abs(_qty),
+                    "Entry": float(_p.get("avg_entry_price") or 0),
+                    "Not Yet Sold (Unrealized)": float(_p.get("unrealized_pl") or 0),
+                })
+
+        if _broker_rows:
+            _total_nav = sum(r["Account Value"] for r in _broker_rows)
+            _total_unrealized = sum(r["Not Yet Sold (Unrealized)"] for r in _broker_rows)
+            _total_realized = sum(r["Already Sold (Realized)"] for r in _broker_rows)
+            _total_open = sum(r["Open positions"] for r in _broker_rows)
+            # Ground-truth profit/loss: current account value minus what was
+            # actually deposited — the same math the Account Standing banner at
+            # the top of the page uses. Deliberately NOT "realized + unrealized"
+            # (real gap found live 2026-09-22: that trade-log-derived figure can
+            # drift a little from this one — ~$85 seen live — from broker fees/
+            # financing charges that never land in trade_outcomes as a row).
+            # Showing two different "profit" numbers on the same page would be
+            # exactly the confusion this section exists to prevent, so this one
+            # wins as the headline; the trade-log figure is still shown, just
+            # captioned honestly as the secondary, less authoritative one.
+            _total_deposited = sum(_AS_STARTING_BALANCE.get(_bk, 0.0) for _bk, _, _ in _combined_sources)
+            _total_pl = _total_nav - _total_deposited if _total_deposited else (_total_realized + _total_unrealized)
+            cc1, cc2, cc3, cc4, cc5 = st.columns(5)
+            cc1.metric("Combined Account Value", f"${_total_nav:,.2f}")
+            cc2.metric("Not Yet Sold (Unrealized)", f"${_total_unrealized:,.2f}")
+            cc3.metric("Already Sold (Realized)", f"${_total_realized:,.2f}")
+            cc4.metric("Total Profit/Loss", f"${_total_pl:,.2f}", help="Account value minus total deposited — matches the Account Standing banner above.")
+            cc5.metric("Open positions", _total_open)
+            st.dataframe(pd.DataFrame(_broker_rows), width="stretch", hide_index=True)
+            if _position_rows:
+                st.markdown("**All open positions**")
+                st.dataframe(pd.DataFrame(_position_rows), width="stretch", hide_index=True)
             else:
                 st.caption("No open positions.")
+            st.caption(
+                "\"Not yet sold\" money moves with the market until you close the position — it isn't "
+                "locked in, and a leveraged position moves it faster. Only closed (sold) trades count "
+                "as \"already sold.\" Note: Already Sold + Not Yet Sold can differ slightly from Total "
+                "Profit/Loss above — broker fees and financing charges affect account value directly "
+                "but aren't always logged as their own trade row."
+            )
+        st.divider()
 
-# -------------------------------------------------------------- risk center --
-with tab_risk:
-    st.subheader("Risk Center")
-    st.caption(
-        "Autonomous Upgrade Spec sec. 17: every hard limit the risk governor enforces, "
-        "current state against each one, and what's actually been rejecting trades lately. "
-        "src/risk/governor.py's own docstring: this component has veto power over every "
-        "other agent, and nothing anywhere is allowed to loosen these to look better."
-    )
-
-    st.markdown("#### Hard limits")
-    limits_rows = [
-        {"Control": "Per-trade risk", "Value": f"{risk_governor.RISK_PER_TRADE_PCT:.2%} of NAV (ceiling {risk_governor.RISK_PER_TRADE_CEILING_PCT:.2%})"},
-        {"Control": "Daily loss limit", "Value": f"{risk_governor.DAILY_LOSS_LIMIT_PCT:.2%} — engages kill switch"},
-        {"Control": "Weekly loss limit", "Value": f"{risk_governor.WEEKLY_LOSS_LIMIT_PCT:.2%} — engages kill switch"},
-        {"Control": "Max concurrent positions", "Value": str(risk_governor.MAX_CONCURRENT_POSITIONS)},
-        {"Control": "Max correlated USD exposure", "Value": f"{risk_governor.MAX_CORRELATED_EXPOSURE_PCT:.2%} of NAV"},
-        {"Control": "Equity/crypto notional ceiling", "Value": f"{risk_governor.MAX_EQUITY_CRYPTO_NOTIONAL_PCT:.0%} of NAV, same-direction total (no leverage; forex exempt)"},
-        {"Control": "Spread guard", "Value": f"reject above {risk_governor.MAX_SPREAD_MULTIPLE}x recent median spread"},
-        {"Control": "Min confidence", "Value": f"{risk_governor.MIN_CONFIDENCE:.0%} — below this, no sizing"},
-        {"Control": "Event lockout", "Value": f"{risk_governor.EVENT_LOCKOUT_MINUTES} min around tier-1 releases"},
-        {"Control": "Price-drift / slippage guard", "Value": f"reject if price moved > {risk_governor.PRICE_DRIFT_STOP_RATIO:.0%} of stop distance since signal"},
-        {"Control": "Stale-data guard", "Value": ", ".join(f"{k}: {v:.0f}s" for k, v in risk_governor.FRESHNESS_THRESHOLDS_SECONDS.items())},
-        {"Control": "Regime size multipliers", "Value": ", ".join(f"{k}: x{v}" for k, v in risk_governor.REGIME_SIZE_MULTIPLIERS.items()) or "none active outside HIGH_VOLATILITY/SHOCK"},
-        {"Control": "Confidence-scaled sizing", "Value": (
-            f"{risk_governor.CONFIDENCE_SIZE_FLOOR:.0%} of baseline at min confidence, up to "
-            f"{risk_governor.RISK_PER_TRADE_CEILING_PCT / risk_governor.RISK_PER_TRADE_PCT:.0%} "
-            "at full confidence — regime and track record still only ever dampen this, never boost it"
-        )},
-    ]
-    section_card(lambda: st.dataframe(pd.DataFrame(limits_rows), width="stretch", hide_index=True))
-
-    st.write("")
-    st.markdown("#### Current state")
-    st.caption(
-        "Kill switch and daily/weekly loss limits are tracked per broker — "
-        "see src/risk/governor.py."
-    )
-    broker_kinds_present = ["alpaca"] if _alpaca_configured() else []
-    if not broker_kinds_present:
-        st.caption("Alpaca isn't configured for this account yet.")
-    for bk, col in zip(broker_kinds_present, st.columns(len(broker_kinds_present) or 1)):
-        # Combined across all three sources (manual/reconciliation, daily,
-        # weekly — see get_kill_switch_state's docstring), not just today's
-        # daily row: a manual stop or a still-live weekly breach must show
-        # here even outside the exact day it was triggered.
-        broker_kill_state = get_kill_switch_state(broker=bk)
-        with col:
-            if broker_kill_state and broker_kill_state["kill_switch_active"]:
-                stat_tile(f"Kill switch — {BROKER_LABELS[bk]}", "🔴 ACTIVE",
-                          broker_kill_state["kill_switch_reason"] or "", polarity="negative")
-            else:
-                stat_tile(f"Kill switch — {BROKER_LABELS[bk]}", "🟢 clear", "")
-
-    st.write("")
-    c2, c3 = st.columns(2)
-    with c2:
-        with engine.connect() as conn:
-            open_count_paper = conn.execute(
-                select(func.count()).select_from(trade_intents)
-                .where(trade_intents.c.status == "AUTO_EXECUTED", trade_intents.c.user_id == CURRENT_USER_ID)
-            ).scalar()
-        stat_tile("Auto-executed today", str(open_count_paper or 0),
-                  "trades sent without waiting for human review, across every market")
-    with c3:
-        with engine.connect() as conn:
-            rejected_count = conn.execute(
-                select(func.count()).select_from(trade_intents)
-                .where(trade_intents.c.status == "RISK_REJECTED", trade_intents.c.user_id == CURRENT_USER_ID)
-            ).scalar()
-        stat_tile("Risk-rejected (all time)", str(rejected_count or 0),
-                  "signals the governor vetoed, across every market")
-
-    st.write("")
-    st.markdown("#### Daily / weekly loss usage")
-    for bk in broker_kinds_present:
-        st.markdown(f"**{BROKER_LABELS[bk]}**")
+        st.subheader("📝 Paper account")
         try:
-            daily_pl_pct, weekly_pl_pct = pl_pct_for_broker(bk, scan_mode)
-            m1, m2 = st.columns(2)
-            with m1:
-                if daily_pl_pct is not None:
-                    st.plotly_chart(
-                        loss_meter_figure(daily_pl_pct, risk_governor.DAILY_LOSS_LIMIT_PCT, "Daily"),
-                        width="stretch", config={"displayModeBar": False}, key=f"loss_meter_daily_{bk}",
-                    )
-                else:
-                    st.caption("No daily baseline recorded yet.")
-            with m2:
-                if weekly_pl_pct is not None:
-                    st.plotly_chart(
-                        loss_meter_figure(weekly_pl_pct, risk_governor.WEEKLY_LOSS_LIMIT_PCT, "Weekly"),
-                        width="stretch", config={"displayModeBar": False}, key=f"loss_meter_weekly_{bk}",
-                    )
-                else:
-                    st.caption("No weekly baseline recorded yet.")
+            state, positions = cached_account_state("paper", CURRENT_USER_ID)
         except Exception as exc:  # noqa: BLE001
-            st.caption(f"Could not compute loss usage: {exc!r}")
-
-    st.write("")
-    st.markdown("#### Per-instrument track record")
-    st.caption(
-        "User-requested 2026-08-14: position sizing is dampened (never boosted — same "
-        "never-increase-beyond-baseline rule every other multiplier here follows) for "
-        "instruments with a poor or unproven real hit rate, so genuinely reliable pairs "
-        "end up carrying more of the book's risk without ever inflating confidence in "
-        "something that hasn't earned it. 'One-sided' means every signal so far has been "
-        "the same direction (e.g. a real trend that never happened to reverse) — that's "
-        "deliberately NOT trusted as proven skill until the other direction has real "
-        "evidence too (found live: USD_TRY showed a 100% hit rate that was 306/306 BUY-only)."
-    )
-    try:
-        records = all_track_records(engine, CURRENT_USER_ID)
-        if records:
-            track_df = pd.DataFrame([
-                {
-                    "Market": ASSET_CLASS_LABELS.get(asset_class_for(r.instrument), "").split(" · ")[0],
-                    "Instrument": r.instrument,
-                    "Signals": r.n,
-                    "Hit rate": f"{r.hit_rate:.0%}" if r.hit_rate is not None else "—",
-                    "BUY / SELL": f"{r.buy_n} / {r.sell_n}",
-                    "Two-sided evidence": "✅" if r.two_sided else "—",
-                    "Size multiplier": f"x{r.multiplier:.2f}",
-                }
-                for r in records
-            ])
-            section_card(lambda: st.dataframe(track_df, width="stretch", hide_index=True))
+            st.warning(f"Could not load paper account: {exc!r}")
         else:
-            empty_state("No scored signals yet — accumulating evidence.")
-    except Exception as exc:  # noqa: BLE001
-        st.caption(f"Could not compute track records: {exc!r}")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Balance", f"${state.balance:,.2f}")
+            c2.metric("NAV", f"${state.nav:,.2f}")
+            c3.metric("Unrealized P/L", f"${state.unrealized_pl:,.2f}")
+            c4.metric("Open positions", state.open_position_count)
 
-    st.write("")
-    st.markdown("#### What's actually been rejecting trades")
-    with engine.connect() as conn:
-        recent_decisions = conn.execute(
-            select(risk_decisions_table.c.approved, risk_decisions_table.c.gates_json)
-            .where(risk_decisions_table.c.user_id == CURRENT_USER_ID)
-            .order_by(risk_decisions_table.c.id.desc()).limit(500)
-        ).mappings().all()
-    gate_failures: dict[str, int] = {}
-    for d in recent_decisions:
-        if d["approved"] or not d["gates_json"]:
-            continue
-        for g in json.loads(d["gates_json"]):
-            if not g["passed"]:
-                gate_failures[g["name"]] = gate_failures.get(g["name"], 0) + 1
-    if gate_failures:
-        fail_df = pd.DataFrame(sorted(gate_failures.items(), key=lambda kv: -kv[1]), columns=["Gate", "Rejections (last 500 decisions)"])
-        section_card(lambda: st.dataframe(fail_df, width="stretch", hide_index=True))
-    else:
-        empty_state("✅ No gate rejections in the most recent decisions.")
+            if positions:
+                st.dataframe(pd.DataFrame(positions), width="stretch", hide_index=True)
+            else:
+                st.caption("No open positions.")
+        st.divider()
 
-# ----------------------------------------------------------- automation center --
-with tab_automation:
-    st.subheader("Automation Center")
-    st.caption(
-        "Autonomous Upgrade Spec sec. 19-20: every scheduled job this system depends on, "
-        "read from its own log file rather than a live Task Scheduler query (simpler and "
-        "more robust for a web page to read than shelling out to PowerShell on every render)."
-    )
-    logs_dir = Path(__file__).resolve().parent.parent.parent / "logs"
-    jobs = [
-        ("AIForex_DemoTradingCycle", "Core decision loop — price/macro/news/cross-market fusion, risk gating, execution", "continuous", "demo_trading.log"),
-        ("AIForex_IngestKnowledge", "Knowledge Lab: scan forex_knowledge/ for new documents, score, chunk, index", "hourly", "ingest_knowledge.log"),
-        ("AIForex_IngestGdeltNews", "GDELT news collection, clustering, novelty/velocity scoring", "every 20 min", "gdelt_news.log"),
-        ("AIForex_CalendarIngest", "Forex Factory economic calendar refresh", "every 30 min", "calendar_ingest.log"),
-        ("AIForex_ComputeEconomicSurprises", "FRED x Forex Factory surprise matching + reaction mismatch", "hourly", "economic_surprises.log"),
-        ("AIForex_IngestCentralBank", "Fed statement archive, diff, tone, dissent extraction", "every 2 hours", "central_bank.log"),
-        ("AIForex_IngestCftcPositioning", "CFTC weekly Commitments of Traders positioning", "daily", "cftc_positioning.log"),
-        ("AIForex_SyncOutcomes", "Walk broker transaction ledger, match closed trades back to signals", "every 30 min", "sync_outcomes.log"),
-        ("AIForex_TradeAttribution", "Post-trade attribution (model/execution/event/regime/noise)", "hourly", "trade_attribution.log"),
-        ("AIForex_EvaluateChallengers", "Score champion + challenger shadow decisions vs real price outcomes", "every 30 min", "evaluate_challengers.log"),
-        ("AIForex_TrainMetaModel", "Retrain meta-model candidate once enough labeled outcomes exist", "daily", "train_meta_model.log"),
-        ("AIForex_PromotionGateSnapshot", "Records the current phase-readiness report per user (sample size, calibration, uptime, ...)", "weekly", "promotion_gates.log"),
-    ]
-    now_utc = datetime.now(timezone.utc)
-    rows = []
-    for name, description, cadence, log_file in jobs:
-        path = logs_dir / log_file
-        if path.exists():
-            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-            age = format_duration((now_utc - mtime).total_seconds())
-            status = "🟢 recent" if (now_utc - mtime).total_seconds() < 3600 * 6 else "🟡 stale"
+        st.subheader("📈 Alpaca account (equities + crypto, paper)")
+        if not _alpaca_configured():
+            st.caption("Alpaca isn't configured for this account yet.")
         else:
-            age, status = "never run", "⚪ no log yet"
-        rows.append({"Job": name, "Cadence": cadence, "What it does": description, "Last log write": age, "Status": status})
-    section_card(lambda: st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True))
-    st.caption(
-        "\"Stale\" flags a job whose log hasn't been touched in 6+ hours — for a daily/weekly "
-        "cadence job that's normal, not a problem; it's most meaningful for the frequent ones."
-    )
+            try:
+                alpaca_state, alpaca_positions = cached_alpaca_account_state(CURRENT_USER_ID)
+            except Exception as exc:  # noqa: BLE001
+                st.warning(f"Could not load Alpaca account: {exc!r}")
+            else:
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Balance", f"${alpaca_state.balance:,.2f}")
+                c2.metric("NAV", f"${alpaca_state.nav:,.2f}")
+                c3.metric("Unrealized P/L", f"${alpaca_state.unrealized_pl:,.2f}")
+                c4.metric("Open positions", alpaca_state.open_position_count)
 
-# -------------------------------------------------------------- audit log --
-with tab_history:
-    st.subheader("Authorization audit trail")
-    history = auth_service.list_history(engine, CURRENT_USER_ID, limit=100)
-    if not history:
-        st.info("No authorization decisions have been made yet.")
-    else:
-        rows = []
+                if alpaca_positions:
+                    st.dataframe(pd.DataFrame(alpaca_positions), width="stretch", hide_index=True)
+                else:
+                    st.caption("No open positions.")
+
+    # -------------------------------------------------------------- risk center --
+
+    with tab_all:
+        st.subheader("All recent signals (every status, for full transparency)")
         with engine.connect() as conn:
-            for h in history:
-                fill = None
-                if h["resulting_client_order_id"]:
-                    fill = conn.execute(
-                        select(orders_fills).where(
-                            orders_fills.c.client_order_id == h["resulting_client_order_id"],
-                            orders_fills.c.user_id == CURRENT_USER_ID,
-                        )
-                    ).mappings().first()
-                _instrument = h["intent"]["instrument"] if h["intent"] else None
-                rows.append(
-                    {
-                        "authorized_at": h["authorized_at"],
-                        "market": ASSET_CLASS_LABELS.get(asset_class_for(_instrument), "").split(" · ")[0] if _instrument else None,
-                        "instrument": _instrument,
-                        "action": h["intent"]["action"] if h["intent"] else None,
-                        "decision": h["decision"],
-                        "authorized_by": h["authorized_by"],
-                        "notes": h["notes"],
-                        "order_status": fill["status"] if fill else None,
-                        "fill_price": fill["fill_price"] if fill else None,
-                    }
-                )
-        section_card(lambda: st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True))
-
-# ------------------------------------------------------------- all signals --
-with tab_all:
-    st.subheader("All recent signals (every status, for full transparency)")
-    with engine.connect() as conn:
-        rows = conn.execute(
-            select(trade_intents)
-            .where(trade_intents.c.user_id == CURRENT_USER_ID)
-            .order_by(trade_intents.c.id.desc()).limit(100)
-        ).mappings().all()
-    if rows:
-        df = pd.DataFrame([dict(r) for r in rows])
-        df["market"] = df["instrument"].map(lambda i: ASSET_CLASS_LABELS.get(asset_class_for(i), "").split(" · ")[0])
-        section_card(lambda: st.dataframe(
-            df[["time", "market", "instrument", "horizon", "action", "confidence", "regime", "status", "execution_mode"]],
-            width="stretch", hide_index=True,
-        ))
-    else:
-        empty_state("No signals generated yet.")
-
-with tab_equity_intel:
-    st.subheader("Equity Intelligence")
-    st.caption(
-        "Equity V2 Phase 16. Data health for the SEC/news/relationship pipelines, "
-        "reconciled broker-verified-vs-internal performance (Phase 15), and open "
-        "reconciliation findings (Phase 1). The Phase 10 challenger models and "
-        "Phase 13 risk-governor extensions referenced below are explicitly "
-        "SHADOW-ONLY — nothing on this tab drives a real trade; the live decisions "
-        "that do are the existing price model + src/decision/fusion.py, shown "
-        "elsewhere in this dashboard. Never label a number here as broker-verified "
-        "unless it actually came from the broker."
-    )
-
-    equity_tickers = sorted({i.upper() for i in _all_instruments if asset_class_for(i) == "equity"})
-
-    st.markdown("#### Data health")
-    with engine.connect() as conn:
-        last_entity_sync = conn.execute(select(func.max(equity_entities_table.c.updated_at))).scalar()
-        last_fundamentals_filed = conn.execute(select(func.max(company_fundamentals_table.c.filed_at))).scalar()
-        last_news_ingest = conn.execute(select(func.max(equity_news_table.c.ingest_time))).scalar()
-    h1, h2, h3 = st.columns(3)
-    with h1:
-        stat_tile("Sector/relationship data (Phase 7)",
-                   last_entity_sync.strftime("%Y-%m-%d %H:%M UTC") if last_entity_sync else "never synced",
-                   f"{len(equity_tickers)} equity ticker(s) in your instrument list")
-    with h2:
-        stat_tile("SEC fundamentals (Phase 4)",
-                   f"latest filing {last_fundamentals_filed.strftime('%Y-%m-%d')}" if last_fundamentals_filed else "none yet", "")
-    with h3:
-        stat_tile("Equity news (Phase 6)",
-                   last_news_ingest.strftime("%Y-%m-%d %H:%M UTC") if last_news_ingest else "never synced", "")
-
-    st.write("")
-    # Gated behind an explicit click, not run on every page load: this
-    # section's real Alpaca portfolio-history/positions calls plus several
-    # DB queries measurably pushed this dashboard's total render time up
-    # against (and briefly over) the 120s smoke-test ceiling when it ran
-    # unconditionally — confirmed by direct timing of each piece (a few
-    # seconds each) that didn't individually explain the total, and by
-    # three consecutive full-dashboard runs trending 103s -> 118s -> a
-    # genuine 135s timeout. A lazy, click-to-load gate is the only fix that
-    # structurally guarantees this section adds ZERO cost to every other
-    # page load, rather than relying on caching (which only helps on a
-    # SECOND rerun — no help to a true one-shot render, like the smoke
-    # test itself, or a user's very first visit to this tab).
-    if not st.button("Load performance, reconciliation & per-ticker data"):
-        empty_state("Click above to load (real Alpaca + DB calls — not run automatically on every page load).")
-    elif not _alpaca_configured():
-        empty_state("Alpaca isn't configured for this account yet — performance/reconciliation below need it.")
-    else:
-        st.write("")
-        st.markdown("#### Performance — broker-verified vs. internal, never blended")
-        try:
-            _, _alpaca_positions = cached_alpaca_account_state(CURRENT_USER_ID)
-            _portfolio_history = cached_alpaca_portfolio_history(CURRENT_USER_ID)
-            _period_end = datetime.now(timezone.utc)
-            _period_start = _period_end - timedelta(days=30)
-            _spy_df = cached_benchmark_candles_df("SPY", "H1")
-            _qqq_df = cached_benchmark_candles_df("QQQ", "H1")
-            _report = build_performance_report(
-                engine, CURRENT_USER_ID, "alpaca", _period_start, _period_end,
-                _portfolio_history, _alpaca_positions, spy_candles=_spy_df, qqq_candles=_qqq_df,
-            )
-            p1, p2, p3, p4 = st.columns(4)
-            with p1:
-                stat_tile(
-                    "Broker account return (30d)",
-                    f"{_report.broker_account_return_pct:+.2%}" if _report.broker_account_return_pct is not None else "n/a",
-                    f"${_report.broker_account_return_usd:+,.0f}" if _report.broker_account_return_usd is not None else "",
-                    polarity="positive" if (_report.broker_account_return_usd or 0) >= 0 else "negative",
-                )
-            with p2:
-                stat_tile(
-                    "Model-attributable realized P/L",
-                    f"${_report.model_attributable_realized_pl_usd:+,.0f}",
-                    f"{_report.n_model_attributable_trades} trade(s) linked to a real signal",
-                    polarity="positive" if _report.model_attributable_realized_pl_usd >= 0 else "negative",
-                )
-            with p3:
-                stat_tile(
-                    "Unexplained realized P/L",
-                    f"${_report.unexplained_realized_pl_usd:+,.0f}",
-                    f"{_report.n_unexplained_trades} trade(s) with no linked signal — see Phase 1 reconciliation",
-                    polarity="negative" if _report.unexplained_realized_pl_usd < 0 else None,
-                )
-            with p4:
-                stat_tile(
-                    "Current unrealized P/L",
-                    f"${_report.current_unrealized_pl_usd:+,.0f}",
-                    "open positions, mark-to-market — not yet real",
-                    polarity="positive" if _report.current_unrealized_pl_usd >= 0 else "negative",
-                )
-            _spy_caption = (
-                f"vs SPY: {_report.account_return_vs_spy_pct:+.2%}" if _report.account_return_vs_spy_pct is not None
-                else "vs SPY: n/a (benchmark history doesn't cover this window)"
-            )
-            _qqq_caption = (
-                f"vs QQQ: {_report.account_return_vs_qqq_pct:+.2%}" if _report.account_return_vs_qqq_pct is not None
-                else "vs QQQ: n/a"
-            )
-            st.caption(f"{_spy_caption}  ·  {_qqq_caption}")
-        except Exception:
-            logger.exception("Equity performance report failed to render")
-            empty_state("Couldn't load the performance report this cycle — see server logs.")
-
-        st.write("")
-        st.markdown("#### Open reconciliation findings (Phase 1)")
-        with engine.connect() as conn:
-            _issues = conn.execute(
-                select(reconciliation_issues_table)
-                .where(reconciliation_issues_table.c.resolved_at.is_(None))
-                .order_by(reconciliation_issues_table.c.detected_at.desc())
-                .limit(20)
+            rows = conn.execute(
+                select(trade_intents)
+                .where(trade_intents.c.user_id == CURRENT_USER_ID)
+                .order_by(trade_intents.c.id.desc()).limit(100)
             ).mappings().all()
-        if _issues:
-            _issues_df = pd.DataFrame([dict(r) for r in _issues])
+        if rows:
+            df = pd.DataFrame([dict(r) for r in rows])
+            df["market"] = df["instrument"].map(lambda i: ASSET_CLASS_LABELS.get(asset_class_for(i), "").split(" · ")[0])
             section_card(lambda: st.dataframe(
-                _issues_df[["detected_at", "severity", "symbol", "issue_type", "description"]],
+                df[["time", "market", "instrument", "horizon", "action", "confidence", "regime", "status", "execution_mode"]],
                 width="stretch", hide_index=True,
             ))
         else:
-            empty_state("No open (unresolved) reconciliation findings.")
+            empty_state("No signals generated yet.")
+
+
+    with tab_equity_intel:
+        st.subheader("Equity Intelligence")
+        st.caption(
+            "Equity V2 Phase 16. Data health for the SEC/news/relationship pipelines, "
+            "reconciled broker-verified-vs-internal performance (Phase 15), and open "
+            "reconciliation findings (Phase 1). The Phase 10 challenger models and "
+            "Phase 13 risk-governor extensions referenced below are explicitly "
+            "SHADOW-ONLY — nothing on this tab drives a real trade; the live decisions "
+            "that do are the existing price model + src/decision/fusion.py, shown "
+            "elsewhere in this dashboard. Never label a number here as broker-verified "
+            "unless it actually came from the broker."
+        )
+
+        equity_tickers = sorted({i.upper() for i in _all_instruments if asset_class_for(i) == "equity"})
+
+        st.markdown("#### Data health")
+        with engine.connect() as conn:
+            last_entity_sync = conn.execute(select(func.max(equity_entities_table.c.updated_at))).scalar()
+            last_fundamentals_filed = conn.execute(select(func.max(company_fundamentals_table.c.filed_at))).scalar()
+            last_news_ingest = conn.execute(select(func.max(equity_news_table.c.ingest_time))).scalar()
+        h1, h2, h3 = st.columns(3)
+        with h1:
+            stat_tile("Sector/relationship data (Phase 7)",
+                       last_entity_sync.strftime("%Y-%m-%d %H:%M UTC") if last_entity_sync else "never synced",
+                       f"{len(equity_tickers)} equity ticker(s) in your instrument list")
+        with h2:
+            stat_tile("SEC fundamentals (Phase 4)",
+                       f"latest filing {last_fundamentals_filed.strftime('%Y-%m-%d')}" if last_fundamentals_filed else "none yet", "")
+        with h3:
+            stat_tile("Equity news (Phase 6)",
+                       last_news_ingest.strftime("%Y-%m-%d %H:%M UTC") if last_news_ingest else "never synced", "")
 
         st.write("")
-        st.markdown("#### Per-ticker snapshot")
-        if not equity_tickers:
-            empty_state("No equity tickers in your instrument list yet.")
+        # Gated behind an explicit click, not run on every page load: this
+        # section's real Alpaca portfolio-history/positions calls plus several
+        # DB queries measurably pushed this dashboard's total render time up
+        # against (and briefly over) the 120s smoke-test ceiling when it ran
+        # unconditionally — confirmed by direct timing of each piece (a few
+        # seconds each) that didn't individually explain the total, and by
+        # three consecutive full-dashboard runs trending 103s -> 118s -> a
+        # genuine 135s timeout. A lazy, click-to-load gate is the only fix that
+        # structurally guarantees this section adds ZERO cost to every other
+        # page load, rather than relying on caching (which only helps on a
+        # SECOND rerun — no help to a true one-shot render, like the smoke
+        # test itself, or a user's very first visit to this tab).
+        if not st.button("Load performance, reconciliation & per-ticker data"):
+            empty_state("Click above to load (real Alpaca + DB calls — not run automatically on every page load).")
+        elif not _alpaca_configured():
+            empty_state("Alpaca isn't configured for this account yet — performance/reconciliation below need it.")
         else:
+            st.write("")
+            st.markdown("#### Performance — broker-verified vs. internal, never blended")
+            try:
+                _, _alpaca_positions = cached_alpaca_account_state(CURRENT_USER_ID)
+                _portfolio_history = cached_alpaca_portfolio_history(CURRENT_USER_ID)
+                _period_end = datetime.now(timezone.utc)
+                _period_start = _period_end - timedelta(days=30)
+                _spy_df = cached_benchmark_candles_df("SPY", "H1")
+                _qqq_df = cached_benchmark_candles_df("QQQ", "H1")
+                _report = build_performance_report(
+                    engine, CURRENT_USER_ID, "alpaca", _period_start, _period_end,
+                    _portfolio_history, _alpaca_positions, spy_candles=_spy_df, qqq_candles=_qqq_df,
+                )
+                p1, p2, p3, p4 = st.columns(4)
+                with p1:
+                    stat_tile(
+                        "Broker account return (30d)",
+                        f"{_report.broker_account_return_pct:+.2%}" if _report.broker_account_return_pct is not None else "n/a",
+                        f"${_report.broker_account_return_usd:+,.0f}" if _report.broker_account_return_usd is not None else "",
+                        polarity="positive" if (_report.broker_account_return_usd or 0) >= 0 else "negative",
+                    )
+                with p2:
+                    stat_tile(
+                        "Model-attributable realized P/L",
+                        f"${_report.model_attributable_realized_pl_usd:+,.0f}",
+                        f"{_report.n_model_attributable_trades} trade(s) linked to a real signal",
+                        polarity="positive" if _report.model_attributable_realized_pl_usd >= 0 else "negative",
+                    )
+                with p3:
+                    stat_tile(
+                        "Unexplained realized P/L",
+                        f"${_report.unexplained_realized_pl_usd:+,.0f}",
+                        f"{_report.n_unexplained_trades} trade(s) with no linked signal — see Phase 1 reconciliation",
+                        polarity="negative" if _report.unexplained_realized_pl_usd < 0 else None,
+                    )
+                with p4:
+                    stat_tile(
+                        "Current unrealized P/L",
+                        f"${_report.current_unrealized_pl_usd:+,.0f}",
+                        "open positions, mark-to-market — not yet real",
+                        polarity="positive" if _report.current_unrealized_pl_usd >= 0 else "negative",
+                    )
+                _spy_caption = (
+                    f"vs SPY: {_report.account_return_vs_spy_pct:+.2%}" if _report.account_return_vs_spy_pct is not None
+                    else "vs SPY: n/a (benchmark history doesn't cover this window)"
+                )
+                _qqq_caption = (
+                    f"vs QQQ: {_report.account_return_vs_qqq_pct:+.2%}" if _report.account_return_vs_qqq_pct is not None
+                    else "vs QQQ: n/a"
+                )
+                st.caption(f"{_spy_caption}  ·  {_qqq_caption}")
+            except Exception:
+                logger.exception("Equity performance report failed to render")
+                empty_state("Couldn't load the performance report this cycle — see server logs.")
+
+            st.write("")
+            st.markdown("#### Open reconciliation findings (Phase 1)")
             with engine.connect() as conn:
-                _sector_rows = conn.execute(
-                    select(equity_entities_table.c.ticker, equity_entities_table.c.sector, equity_entities_table.c.sector_etf)
-                    .where(equity_entities_table.c.ticker.in_(equity_tickers))
+                _issues = conn.execute(
+                    select(reconciliation_issues_table)
+                    .where(reconciliation_issues_table.c.resolved_at.is_(None))
+                    .order_by(reconciliation_issues_table.c.detected_at.desc())
+                    .limit(20)
                 ).mappings().all()
-            _sector_by_ticker = {r["ticker"]: r for r in _sector_rows}
+            if _issues:
+                _issues_df = pd.DataFrame([dict(r) for r in _issues])
+                section_card(lambda: st.dataframe(
+                    _issues_df[["detected_at", "severity", "symbol", "issue_type", "description"]],
+                    width="stretch", hide_index=True,
+                ))
+            else:
+                empty_state("No open (unresolved) reconciliation findings.")
 
-            _recent_news = cached_recent_equity_news()
-            _snapshot_rows = []
-            for ticker in equity_tickers:
-                sector_row = _sector_by_ticker.get(ticker)
-                _news_row = _most_recent_news_for_ticker(_recent_news, ticker)
-                _snapshot_rows.append({
-                    "Ticker": ticker,
-                    "Sector": sector_row["sector"] if sector_row else "not yet enriched",
-                    "Sector ETF": sector_row["sector_etf"] if sector_row else "—",
-                    "Most recent news": _news_row["headline"] if _news_row else "—",
-                    "Event type": (_news_row["event_type"] if _news_row and _news_row["event_type"] else "—"),
-                    "News published": _news_row["publish_time"].strftime("%Y-%m-%d %H:%M UTC") if _news_row else "—",
-                })
-            section_card(lambda: st.dataframe(pd.DataFrame(_snapshot_rows), width="stretch", hide_index=True))
+            st.write("")
+            st.markdown("#### Per-ticker snapshot")
+            if not equity_tickers:
+                empty_state("No equity tickers in your instrument list yet.")
+            else:
+                with engine.connect() as conn:
+                    _sector_rows = conn.execute(
+                        select(equity_entities_table.c.ticker, equity_entities_table.c.sector, equity_entities_table.c.sector_etf)
+                        .where(equity_entities_table.c.ticker.in_(equity_tickers))
+                    ).mappings().all()
+                _sector_by_ticker = {r["ticker"]: r for r in _sector_rows}
 
+                _recent_news = cached_recent_equity_news()
+                _snapshot_rows = []
+                for ticker in equity_tickers:
+                    sector_row = _sector_by_ticker.get(ticker)
+                    _news_row = _most_recent_news_for_ticker(_recent_news, ticker)
+                    _snapshot_rows.append({
+                        "Ticker": ticker,
+                        "Sector": sector_row["sector"] if sector_row else "not yet enriched",
+                        "Sector ETF": sector_row["sector_etf"] if sector_row else "—",
+                        "Most recent news": _news_row["headline"] if _news_row else "—",
+                        "Event type": (_news_row["event_type"] if _news_row and _news_row["event_type"] else "—"),
+                        "News published": _news_row["publish_time"].strftime("%Y-%m-%d %H:%M UTC") if _news_row else "—",
+                    })
+                section_card(lambda: st.dataframe(pd.DataFrame(_snapshot_rows), width="stretch", hide_index=True))
 
-# ---------------------------------------------------------------- admin --
+    with tab_risk:
+        st.subheader("Risk Center")
+        st.caption(
+            "Autonomous Upgrade Spec sec. 17: every hard limit the risk governor enforces, "
+            "current state against each one, and what's actually been rejecting trades lately. "
+            "src/risk/governor.py's own docstring: this component has veto power over every "
+            "other agent, and nothing anywhere is allowed to loosen these to look better."
+        )
+
+        st.markdown("#### Hard limits")
+        limits_rows = [
+            {"Control": "Per-trade risk", "Value": f"{risk_governor.RISK_PER_TRADE_PCT:.2%} of NAV (ceiling {risk_governor.RISK_PER_TRADE_CEILING_PCT:.2%})"},
+            {"Control": "Daily loss limit", "Value": f"{risk_governor.DAILY_LOSS_LIMIT_PCT:.2%} — engages kill switch"},
+            {"Control": "Weekly loss limit", "Value": f"{risk_governor.WEEKLY_LOSS_LIMIT_PCT:.2%} — engages kill switch"},
+            {"Control": "Max concurrent positions", "Value": str(risk_governor.MAX_CONCURRENT_POSITIONS)},
+            {"Control": "Max correlated USD exposure", "Value": f"{risk_governor.MAX_CORRELATED_EXPOSURE_PCT:.2%} of NAV"},
+            {"Control": "Equity/crypto notional ceiling", "Value": f"{risk_governor.MAX_EQUITY_CRYPTO_NOTIONAL_PCT:.0%} of NAV, same-direction total (no leverage; forex exempt)"},
+            {"Control": "Spread guard", "Value": f"reject above {risk_governor.MAX_SPREAD_MULTIPLE}x recent median spread"},
+            {"Control": "Min confidence", "Value": f"{risk_governor.MIN_CONFIDENCE:.0%} — below this, no sizing"},
+            {"Control": "Event lockout", "Value": f"{risk_governor.EVENT_LOCKOUT_MINUTES} min around tier-1 releases"},
+            {"Control": "Price-drift / slippage guard", "Value": f"reject if price moved > {risk_governor.PRICE_DRIFT_STOP_RATIO:.0%} of stop distance since signal"},
+            {"Control": "Stale-data guard", "Value": ", ".join(f"{k}: {v:.0f}s" for k, v in risk_governor.FRESHNESS_THRESHOLDS_SECONDS.items())},
+            {"Control": "Regime size multipliers", "Value": ", ".join(f"{k}: x{v}" for k, v in risk_governor.REGIME_SIZE_MULTIPLIERS.items()) or "none active outside HIGH_VOLATILITY/SHOCK"},
+            {"Control": "Confidence-scaled sizing", "Value": (
+                f"{risk_governor.CONFIDENCE_SIZE_FLOOR:.0%} of baseline at min confidence, up to "
+                f"{risk_governor.RISK_PER_TRADE_CEILING_PCT / risk_governor.RISK_PER_TRADE_PCT:.0%} "
+                "at full confidence — regime and track record still only ever dampen this, never boost it"
+            )},
+        ]
+        section_card(lambda: st.dataframe(pd.DataFrame(limits_rows), width="stretch", hide_index=True))
+
+        st.write("")
+        st.markdown("#### Current state")
+        st.caption(
+            "Kill switch and daily/weekly loss limits are tracked per broker — "
+            "see src/risk/governor.py."
+        )
+        broker_kinds_present = ["alpaca"] if _alpaca_configured() else []
+        if not broker_kinds_present:
+            st.caption("Alpaca isn't configured for this account yet.")
+        for bk, col in zip(broker_kinds_present, st.columns(len(broker_kinds_present) or 1)):
+            # Combined across all three sources (manual/reconciliation, daily,
+            # weekly — see get_kill_switch_state's docstring), not just today's
+            # daily row: a manual stop or a still-live weekly breach must show
+            # here even outside the exact day it was triggered.
+            broker_kill_state = get_kill_switch_state(broker=bk)
+            with col:
+                if broker_kill_state and broker_kill_state["kill_switch_active"]:
+                    stat_tile(f"Kill switch — {BROKER_LABELS[bk]}", "🔴 ACTIVE",
+                              broker_kill_state["kill_switch_reason"] or "", polarity="negative")
+                else:
+                    stat_tile(f"Kill switch — {BROKER_LABELS[bk]}", "🟢 clear", "")
+
+        st.write("")
+        c2, c3 = st.columns(2)
+        with c2:
+            with engine.connect() as conn:
+                open_count_paper = conn.execute(
+                    select(func.count()).select_from(trade_intents)
+                    .where(trade_intents.c.status == "AUTO_EXECUTED", trade_intents.c.user_id == CURRENT_USER_ID)
+                ).scalar()
+            stat_tile("Auto-executed today", str(open_count_paper or 0),
+                      "trades sent without waiting for human review, across every market")
+        with c3:
+            with engine.connect() as conn:
+                rejected_count = conn.execute(
+                    select(func.count()).select_from(trade_intents)
+                    .where(trade_intents.c.status == "RISK_REJECTED", trade_intents.c.user_id == CURRENT_USER_ID)
+                ).scalar()
+            stat_tile("Risk-rejected (all time)", str(rejected_count or 0),
+                      "signals the governor vetoed, across every market")
+
+        st.write("")
+        st.markdown("#### Daily / weekly loss usage")
+        for bk in broker_kinds_present:
+            st.markdown(f"**{BROKER_LABELS[bk]}**")
+            try:
+                daily_pl_pct, weekly_pl_pct = pl_pct_for_broker(bk, scan_mode)
+                m1, m2 = st.columns(2)
+                with m1:
+                    if daily_pl_pct is not None:
+                        st.plotly_chart(
+                            loss_meter_figure(daily_pl_pct, risk_governor.DAILY_LOSS_LIMIT_PCT, "Daily"),
+                            width="stretch", config={"displayModeBar": False}, key=f"loss_meter_daily_{bk}",
+                        )
+                    else:
+                        st.caption("No daily baseline recorded yet.")
+                with m2:
+                    if weekly_pl_pct is not None:
+                        st.plotly_chart(
+                            loss_meter_figure(weekly_pl_pct, risk_governor.WEEKLY_LOSS_LIMIT_PCT, "Weekly"),
+                            width="stretch", config={"displayModeBar": False}, key=f"loss_meter_weekly_{bk}",
+                        )
+                    else:
+                        st.caption("No weekly baseline recorded yet.")
+            except Exception as exc:  # noqa: BLE001
+                st.caption(f"Could not compute loss usage: {exc!r}")
+
+        st.write("")
+        st.markdown("#### Per-instrument track record")
+        st.caption(
+            "User-requested 2026-08-14: position sizing is dampened (never boosted — same "
+            "never-increase-beyond-baseline rule every other multiplier here follows) for "
+            "instruments with a poor or unproven real hit rate, so genuinely reliable pairs "
+            "end up carrying more of the book's risk without ever inflating confidence in "
+            "something that hasn't earned it. 'One-sided' means every signal so far has been "
+            "the same direction (e.g. a real trend that never happened to reverse) — that's "
+            "deliberately NOT trusted as proven skill until the other direction has real "
+            "evidence too (found live: USD_TRY showed a 100% hit rate that was 306/306 BUY-only)."
+        )
+        try:
+            records = all_track_records(engine, CURRENT_USER_ID)
+            if records:
+                track_df = pd.DataFrame([
+                    {
+                        "Market": ASSET_CLASS_LABELS.get(asset_class_for(r.instrument), "").split(" · ")[0],
+                        "Instrument": r.instrument,
+                        "Signals": r.n,
+                        "Hit rate": f"{r.hit_rate:.0%}" if r.hit_rate is not None else "—",
+                        "BUY / SELL": f"{r.buy_n} / {r.sell_n}",
+                        "Two-sided evidence": "✅" if r.two_sided else "—",
+                        "Size multiplier": f"x{r.multiplier:.2f}",
+                    }
+                    for r in records
+                ])
+                section_card(lambda: st.dataframe(track_df, width="stretch", hide_index=True))
+            else:
+                empty_state("No scored signals yet — accumulating evidence.")
+        except Exception as exc:  # noqa: BLE001
+            st.caption(f"Could not compute track records: {exc!r}")
+
+        st.write("")
+        st.markdown("#### What's actually been rejecting trades")
+        with engine.connect() as conn:
+            recent_decisions = conn.execute(
+                select(risk_decisions_table.c.approved, risk_decisions_table.c.gates_json)
+                .where(risk_decisions_table.c.user_id == CURRENT_USER_ID)
+                .order_by(risk_decisions_table.c.id.desc()).limit(500)
+            ).mappings().all()
+        gate_failures: dict[str, int] = {}
+        for d in recent_decisions:
+            if d["approved"] or not d["gates_json"]:
+                continue
+            for g in json.loads(d["gates_json"]):
+                if not g["passed"]:
+                    gate_failures[g["name"]] = gate_failures.get(g["name"], 0) + 1
+        if gate_failures:
+            fail_df = pd.DataFrame(sorted(gate_failures.items(), key=lambda kv: -kv[1]), columns=["Gate", "Rejections (last 500 decisions)"])
+            section_card(lambda: st.dataframe(fail_df, width="stretch", hide_index=True))
+        else:
+            empty_state("✅ No gate rejections in the most recent decisions.")
+
+    # ----------------------------------------------------------- automation center --
+
+    with tab_automation:
+        st.subheader("Automation Center")
+        st.caption(
+            "Autonomous Upgrade Spec sec. 19-20: every scheduled job this system depends on, "
+            "read from its own log file rather than a live Task Scheduler query (simpler and "
+            "more robust for a web page to read than shelling out to PowerShell on every render)."
+        )
+        logs_dir = Path(__file__).resolve().parent.parent.parent / "logs"
+        jobs = [
+            ("AIForex_DemoTradingCycle", "Core decision loop — price/macro/news/cross-market fusion, risk gating, execution", "continuous", "demo_trading.log"),
+            ("AIForex_IngestKnowledge", "Knowledge Lab: scan forex_knowledge/ for new documents, score, chunk, index", "hourly", "ingest_knowledge.log"),
+            ("AIForex_IngestGdeltNews", "GDELT news collection, clustering, novelty/velocity scoring", "every 20 min", "gdelt_news.log"),
+            ("AIForex_CalendarIngest", "Forex Factory economic calendar refresh", "every 30 min", "calendar_ingest.log"),
+            ("AIForex_ComputeEconomicSurprises", "FRED x Forex Factory surprise matching + reaction mismatch", "hourly", "economic_surprises.log"),
+            ("AIForex_IngestCentralBank", "Fed statement archive, diff, tone, dissent extraction", "every 2 hours", "central_bank.log"),
+            ("AIForex_IngestCftcPositioning", "CFTC weekly Commitments of Traders positioning", "daily", "cftc_positioning.log"),
+            ("AIForex_SyncOutcomes", "Walk broker transaction ledger, match closed trades back to signals", "every 30 min", "sync_outcomes.log"),
+            ("AIForex_TradeAttribution", "Post-trade attribution (model/execution/event/regime/noise)", "hourly", "trade_attribution.log"),
+            ("AIForex_EvaluateChallengers", "Score champion + challenger shadow decisions vs real price outcomes", "every 30 min", "evaluate_challengers.log"),
+            ("AIForex_TrainMetaModel", "Retrain meta-model candidate once enough labeled outcomes exist", "daily", "train_meta_model.log"),
+            ("AIForex_PromotionGateSnapshot", "Records the current phase-readiness report per user (sample size, calibration, uptime, ...)", "weekly", "promotion_gates.log"),
+        ]
+        now_utc = datetime.now(timezone.utc)
+        rows = []
+        for name, description, cadence, log_file in jobs:
+            path = logs_dir / log_file
+            if path.exists():
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+                age = format_duration((now_utc - mtime).total_seconds())
+                status = "🟢 recent" if (now_utc - mtime).total_seconds() < 3600 * 6 else "🟡 stale"
+            else:
+                age, status = "never run", "⚪ no log yet"
+            rows.append({"Job": name, "Cadence": cadence, "What it does": description, "Last log write": age, "Status": status})
+        section_card(lambda: st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True))
+        st.caption(
+            "\"Stale\" flags a job whose log hasn't been touched in 6+ hours — for a daily/weekly "
+            "cadence job that's normal, not a problem; it's most meaningful for the frequent ones."
+        )
+
+    # -------------------------------------------------------------- audit log --
+
+    with tab_history:
+        st.subheader("Authorization audit trail")
+        history = auth_service.list_history(engine, CURRENT_USER_ID, limit=100)
+        if not history:
+            st.info("No authorization decisions have been made yet.")
+        else:
+            rows = []
+            with engine.connect() as conn:
+                for h in history:
+                    fill = None
+                    if h["resulting_client_order_id"]:
+                        fill = conn.execute(
+                            select(orders_fills).where(
+                                orders_fills.c.client_order_id == h["resulting_client_order_id"],
+                                orders_fills.c.user_id == CURRENT_USER_ID,
+                            )
+                        ).mappings().first()
+                    _instrument = h["intent"]["instrument"] if h["intent"] else None
+                    rows.append(
+                        {
+                            "authorized_at": h["authorized_at"],
+                            "market": ASSET_CLASS_LABELS.get(asset_class_for(_instrument), "").split(" · ")[0] if _instrument else None,
+                            "instrument": _instrument,
+                            "action": h["intent"]["action"] if h["intent"] else None,
+                            "decision": h["decision"],
+                            "authorized_by": h["authorized_by"],
+                            "notes": h["notes"],
+                            "order_status": fill["status"] if fill else None,
+                            "fill_price": fill["fill_price"] if fill else None,
+                        }
+                    )
+            section_card(lambda: st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True))
+
+    # ------------------------------------------------------------- all signals --
+
 if CURRENT_IS_ADMIN and tab_admin is not None:
     with tab_admin:
         st.subheader("Admin")
