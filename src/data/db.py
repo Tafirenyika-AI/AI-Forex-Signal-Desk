@@ -982,6 +982,30 @@ v4_activation = Table(
     UniqueConstraint("user_id", "broker", name="uq_v4_activation_user_broker"),
 )
 
+# --- tradingview_alerts: V4 Priority 8 (brief Section 17) -- an audit log
+# of every real HTTP POST the optional TradingView webhook receiver got,
+# accepted or not. dedup_key is nullable (a rejected alert that never got
+# far enough to be normalized has no real key to dedup on) -- SQL treats
+# every NULL as distinct from every other NULL in a unique index on both
+# SQLite and Postgres, so multiple rejected rows never collide here, only
+# genuine duplicate ACCEPTED alerts do (src/integrations/tradingview_webhook.py's
+# own deterministic dedup_key derivation).
+tradingview_alerts = Table(
+    "tradingview_alerts",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("received_at", DateTime(timezone=True), nullable=False),
+    Column("raw_payload_json", Text, nullable=False),
+    Column("accepted", Boolean, nullable=False),
+    Column("rejection_reason", String, nullable=True),
+    Column("symbol_normalized", String, nullable=True),
+    Column("action", String, nullable=True),
+    Column("alert_time", DateTime(timezone=True), nullable=True),
+    Column("strategy_name", String, nullable=True),
+    Column("dedup_key", String, nullable=True),
+    UniqueConstraint("dedup_key", name="uq_tradingview_alert_dedup"),
+)
+
 
 @functools.lru_cache(maxsize=None)
 def get_engine(db_path):
